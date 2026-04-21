@@ -3398,6 +3398,11 @@ class TrackApp(QWidget):
 
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
+    if not os.environ.get("XDG_RUNTIME_DIR"):
+        runtime_dir = Path("/tmp/runtime-root")
+        runtime_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(runtime_dir, 0o700)
+        os.environ["XDG_RUNTIME_DIR"] = str(runtime_dir)
     app = QApplication(sys.argv)
     app.setApplicationName("Rail Inspection Unit")
     app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
