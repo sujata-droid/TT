@@ -3398,6 +3398,8 @@ class TrackApp(QWidget):
 
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
+    os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
+    os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
     if not os.environ.get("XDG_RUNTIME_DIR"):
         runtime_dir = Path("/tmp/runtime-root")
         runtime_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
