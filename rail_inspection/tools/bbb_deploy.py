@@ -18,7 +18,7 @@ REMOTE_ROOT = os.environ.get(
     "BBB_REMOTE_ROOT", "/home/debian/trolley"
 )
 REMOTE_STAGE = os.environ.get("BBB_REMOTE_STAGE", "/tmp/rail_inspection_stage")
-DEPLOY_ITEMS = ["README.md", "setup.sh", "cloud", "main_board", "pru", "sensor_board", "tools"]
+DEPLOY_ITEMS = ["README.md", "setup.sh", "main_ui.py", "cloud", "main_board", "pru", "sensor_board", "tools"]
 
 
 def safe_print(text, stream=sys.stdout):
@@ -143,7 +143,7 @@ def inspect(args):
         "pwd",
         f"ls -la {REMOTE_ROOT} || true",
         f"find {REMOTE_ROOT} -maxdepth 2 -type f -printf '%p\\n' 2>/dev/null | sort | head -100",
-        "ps -ef | grep -E 'sensor_service|main.py' | grep -v grep || true",
+        "ps -ef | grep -E 'sensor_service|main_ui.py|main.py|pppd' | grep -v grep || true",
         "ls -l /dev/spidev* 2>/dev/null || true",
         "ls -l /tmp/rail_sensor.sock 2>/dev/null || true",
     ]
@@ -156,12 +156,13 @@ def deploy(args):
     client = connect()
     run(client, f"rm -rf {shell_quote(REMOTE_STAGE)} && mkdir -p {shell_quote(REMOTE_STAGE)}", timeout=30)
     upload_project(client, Path(__file__).resolve().parents[1], REMOTE_STAGE)
-    sudo_run(client, "pkill -x sensor_service || true; pkill -f '[p]ython3 .*main.py' || true", timeout=30)
+    sudo_run(client, "pkill -x sensor_service || true; pkill -f '[p]ython3 .*main.py' || true; pkill -f '[p]ython3 .*main_ui.py' || true", timeout=30)
     sudo_run(client, f"rm -rf {shell_quote(REMOTE_ROOT)}", timeout=30)
     sudo_run(client, f"mkdir -p {shell_quote(posixpath.dirname(REMOTE_ROOT))}", timeout=30)
     sudo_run(client, f"cp -a {shell_quote(REMOTE_STAGE)} {shell_quote(REMOTE_ROOT)}", timeout=60)
     sudo_run(client, f"chown -R {USER}:{USER} {shell_quote(REMOTE_ROOT)}", timeout=60)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/setup.sh')}", timeout=30)
+    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/main_ui.py')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/main_board/main.py')}", timeout=30)
     run(client, f"cd {shell_quote(REMOTE_ROOT + '/sensor_board')} && make clean && make", timeout=120)
     client.close()
@@ -197,13 +198,17 @@ def frame_test(args):
 pid=$!
 sleep 3
 python3 - <<'PY'
-import socket
-s = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-s.settimeout(5)
-s.connect('/tmp/rail_sensor.sock')
-for _ in range(5):
-    print(s.recv(4096).decode('ascii', 'replace').strip())
-s.close()
+import mmap
+import struct
+import time
+s = struct.Struct('<IIIIqddddiBBBB')
+with open('/dev/shm/rail_sensor_shm', 'rb') as f:
+    m = mmap.mmap(f.fileno(), s.size, access=mmap.ACCESS_READ)
+    for i in range(5):
+        v = s.unpack(m[:s.size])
+        print('frame%d magic=%08x updates=%d cl=%.3f tw=%.3f ch=%.3f enc=%d svc=%d' %
+              (i, v[0], v[3], v[5], v[6], v[7], v[11], v[12]))
+        time.sleep(0.3)
 PY
 kill $pid 2>/dev/null || true
 wait $pid 2>/dev/null || true
@@ -218,21 +223,17 @@ def csv_test(args):
     command = f"""cd {shell_quote(REMOTE_ROOT)}
 rm -rf /tmp/rail_csv_test
 python3 - <<'PY'
-import csv
-import queue
 import sys
-sys.path.insert(0, 'main_board')
-import main
-main.SURVEY_DIR = '/tmp/rail_csv_test'
-q = queue.Queue()
+sys.path.insert(0, '.')
+import main_ui
+logger = main_ui.CSVLogger()
+logger.set_reference('TEST', 'DIAG')
+logger.start('/tmp/rail_csv_test')
 for i in range(5):
-    q.put({{'ts': 1000000 + i, 'cl': 1.25 + i, 'tw': 0.5, 'ch': i * 0.2, 'ga': 1676, 's0': 1, 's1': 1}})
-w = main.CSVWriterThread(q)
-w.start()
-w.stop()
-w.wait(5000)
-print(w.csv_path)
-with open(w.csv_path) as f:
+    logger.write({{'lat': 0, 'lon': 0, 'cross': 1.25 + i, 'twist': 0.5, 'dist': 0.0}})
+path = logger.stop()
+print(path)
+with open(path) as f:
     print(f.read())
 PY
 """

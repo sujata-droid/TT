@@ -13,8 +13,8 @@
 #                         behave as GPIO and the SCL3300 gets zero
 #                         SPI transactions.
 #  3. Build C service   -- Compile sensor_service (acquisition daemon)
-#  4. Build PRU firmware -- Compile encoder_pru0.c with clpru
-#  5. Load PRU firmware  -- Deploy to /lib/firmware and start PRU0
+#  4. Skip PRU firmware -- Rotary encoder removed from runtime
+#  5. Skip PRU load     -- Runtime publishes encoder_ok=1 without chainage
 #  6. Create survey dir  -- /home/debian/surveys with correct permissions
 #  7. Verify             -- Print status of all components
 #
@@ -29,7 +29,7 @@ fail() { echo -e "${RED}[FAIL]${NC} $*"; exit 1; }
 
 echo "============================================================"
 echo " Rail Inspection System Setup"
-echo " BeagleBone Black | SCL3300 Inclinometer | PRU Encoder"
+echo " BeagleBone Black | SCL3300 Inclinometer | main_ui.py"
 echo "============================================================"
 
 # ── Root check ───────────────────────────────────────────────────────
@@ -72,11 +72,7 @@ $CONFIG_PIN P9_18 spi       && ok "P9_18 -> spi     (SCL3300 MOSI)"  || warn "P9
 $CONFIG_PIN P9_21 spi       && ok "P9_21 -> spi     (SCL3300 MISO)"  || warn "P9_21 config failed"
 $CONFIG_PIN P9_22 spi_sclk  && ok "P9_22 -> spi_sclk (SCL3300 SCK)" || warn "P9_22 config failed"
 
-# Rotary encoder PRU input pins
-# P9_27 = pr1_pru0_pru_r31_5 -> Encoder Channel A
-# P9_30 = pr1_pru0_pru_r31_2 -> Encoder Channel B
-$CONFIG_PIN P9_27 pruin     && ok "P9_27 -> pruin   (Encoder A)"     || warn "P9_27 config failed"
-$CONFIG_PIN P9_30 pruin     && ok "P9_30 -> pruin   (Encoder B)"     || warn "P9_30 config failed"
+warn "Rotary encoder removed: skipping encoder pinmux."
 
 # Verify spidev appeared
 if [ -e /dev/spidev0.0 ]; then
@@ -100,75 +96,13 @@ cd ..
 
 # ── 4. Build PRU firmware ─────────────────────────────────────────────
 echo ""
-echo "[4/7] Building PRU firmware..."
-CLPRU=$(command -v clpru 2>/dev/null || echo "")
-if [ -z "$CLPRU" ]; then
-    warn "clpru not found. Trying /usr/bin/clpru..."
-    CLPRU="/usr/bin/clpru"
-fi
-
-if [ -x "$CLPRU" ]; then
-    PRU_INC_PATHS=""
-    for d in /usr/share/ti/cgt-pru/include \
-              /usr/lib/ti/pru-software-support-package/include \
-              /usr/lib/ti/pru-software-support-package/include/am335x; do
-        [ -d "$d" ] && PRU_INC_PATHS="$PRU_INC_PATHS -I$d"
-    done
-
-    cd pru
-    $CLPRU $PRU_INC_PATHS -v3 -O2 --c99 -c encoder_pru0.c \
-        --obj_directory=. && ok "PRU compile OK" || fail "PRU compile failed"
-
-    $CLPRU -z encoder_pru0.obj am335x_pru0.cmd \
-        -o encoder_pru0.out \
-        --entry_point=main --warn_sections --diag_warning=225 \
-        && ok "PRU link OK" || fail "PRU link failed"
-    cd ..
-else
-    warn "clpru not available. PRU firmware NOT built."
-    warn "Install: sudo apt-get install ti-pru-cgt-v2"
-    warn "Encoder will show 0 until PRU firmware is loaded."
-fi
+echo "[4/7] Skipping PRU firmware build..."
+warn "Rotary encoder removed; PRU firmware is not required."
 
 # ── 5. Load PRU firmware ──────────────────────────────────────────────
 echo ""
-echo "[5/7] Loading PRU firmware..."
-FW_SRC="pru/encoder_pru0.out"
-FW_DST="/lib/firmware/am335x-pru0-fw"
-
-if [ -f "$FW_SRC" ]; then
-    cp "$FW_SRC" "$FW_DST"
-    ok "Copied firmware to $FW_DST"
-
-    # Find PRU0 remoteproc node
-    PRU0_NODE=""
-    for d in /sys/class/remoteproc/remoteproc*; do
-        if [ -f "$d/name" ] && grep -q "4a334000.pru" "$d/name" 2>/dev/null; then
-            PRU0_NODE=$(basename "$d")
-            break
-        fi
-    done
-
-    if [ -z "$PRU0_NODE" ]; then
-        warn "PRU0 remoteproc node not found. Trying remoteproc0..."
-        PRU0_NODE="remoteproc0"
-    fi
-
-    NODE="/sys/class/remoteproc/$PRU0_NODE"
-    echo "stop"            | tee "$NODE/state" >/dev/null 2>&1 || true; sleep 1
-    echo "am335x-pru0-fw"  | tee "$NODE/firmware" >/dev/null; sleep 1
-    echo "start"           | tee "$NODE/state" >/dev/null
-    sleep 1
-
-    PRU_STATE=$(cat "$NODE/state" 2>/dev/null || echo "unknown")
-    if [ "$PRU_STATE" = "running" ]; then
-        ok "PRU0 is RUNNING (state=$PRU_STATE)"
-    else
-        warn "PRU0 state=$PRU_STATE (expected 'running')"
-    fi
-else
-    warn "PRU firmware not found at $FW_SRC -- skipping load."
-fi
+echo "[5/7] Skipping PRU firmware load..."
+warn "Rotary encoder removed; PRU0 is not used by sensor_service."
 
 # ── 6. Survey directory ───────────────────────────────────────────────
 echo ""
@@ -185,7 +119,7 @@ echo "[7/7] System verification..."
 
 echo ""
 echo "  SPI device:    $(ls -l /dev/spidev0.0 2>/dev/null || echo 'NOT FOUND')"
-echo "  PRU firmware:  $(ls -lh $FW_DST 2>/dev/null || echo 'NOT FOUND')"
+echo "  PRU firmware:  NOT REQUIRED (rotary encoder removed)"
 echo "  sensor_service:$(ls -lh sensor_board/sensor_service 2>/dev/null || echo 'NOT BUILT')"
 echo "  Survey dir:    $(ls -ld $SURVEY_DIR 2>/dev/null || echo 'NOT FOUND')"
 
@@ -201,16 +135,16 @@ echo ""
 echo " TO START (two terminals or use & to background):"
 echo ""
 echo "   Terminal 1:  sudo ./sensor_board/sensor_service"
-echo "   Terminal 2:  python3 main_board/main.py"
+echo "   Terminal 2:  python3 main_ui.py"
 echo ""
 echo " OR run both with screen/tmux:"
 echo "   sudo ./sensor_board/sensor_service &"
-echo "   python3 main_board/main.py"
+echo "   python3 main_ui.py"
 echo ""
 echo " SENSOR STATUS CHECK:"
 echo "   python3 sensor_status.py"
 echo ""
-echo " CLOUD URL (default endpoint is already baked into main_board/main.py):"
+echo " CLOUD URL (default endpoint is already baked into main_ui.py):"
 echo "   export RAIL_CLOUD_URL=https://thread-qm2o.onrender.com/api/survey"
 echo ""
 echo "============================================================"

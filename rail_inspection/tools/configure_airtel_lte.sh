@@ -35,50 +35,24 @@ if lsusb 2>/dev/null | grep -qi "2c7c:0901"; then
 fi
 
 MODEM_ID="$(mmcli -L 2>/dev/null | sed -n 's#.*Modem/\([0-9][0-9]*\).*#\1#p' | head -n 1)"
-if [ -n "$MODEM_ID" ]; then
-
-    echo "Detected modem $MODEM_ID"
-    mmcli -m "$MODEM_ID" --enable >/dev/null 2>&1 || true
-
-    if nmcli -t -f NAME connection show | grep -qx "$CON_NAME"; then
-        nmcli connection modify "$CON_NAME" \
-            gsm.apn "$APN" \
-            connection.autoconnect yes \
-            ipv4.method auto \
-            ipv6.method ignore
-    else
-        nmcli connection add type gsm ifname "*" con-name "$CON_NAME" apn "$APN" \
-            connection.autoconnect yes \
-            ipv4.method auto \
-            ipv6.method ignore
+start_ppp_fallback() {
+    if [ ! -e /dev/ttyUSB5 ]; then
+        echo "PPP fallback unavailable: /dev/ttyUSB5 is missing." >&2
+        return 1
     fi
 
-    nmcli radio wwan on || true
-    nmcli connection up "$CON_NAME"
+    echo "Configuring Quectel EC200U PPP on /dev/ttyUSB5."
+    command -v pppd >/dev/null 2>&1 || {
+        echo "Missing pppd. Install ppp before running PPP fallback." >&2
+        return 1
+    }
+    command -v chat >/dev/null 2>&1 || {
+        echo "Missing chat. Install ppp before running PPP fallback." >&2
+        return 1
+    }
 
-    echo "LTE status:"
-    nmcli -f GENERAL.STATE,GENERAL.DEVICE,IP4.ADDRESS connection show "$CON_NAME" || true
-    mmcli -m "$MODEM_ID" --signal-get >/dev/null 2>&1 && mmcli -m "$MODEM_ID" --signal-get || true
-    exit 0
-fi
-
-if [ ! -e /dev/ttyUSB5 ]; then
-    echo "No ModemManager modem and /dev/ttyUSB5 is missing. Check USB power/SIM/modem mode." >&2
-    exit 1
-fi
-
-echo "No ModemManager modem found; configuring Quectel EC200U PPP on /dev/ttyUSB5."
-command -v pppd >/dev/null 2>&1 || {
-    echo "Missing pppd. Install ppp before running PPP fallback." >&2
-    exit 1
-}
-command -v chat >/dev/null 2>&1 || {
-    echo "Missing chat. Install ppp before running PPP fallback." >&2
-    exit 1
-}
-
-mkdir -p /etc/chatscripts /etc/ppp/peers
-cat >/etc/chatscripts/airtel-ec200u <<EOF
+    mkdir -p /etc/chatscripts /etc/ppp/peers
+    cat >/etc/chatscripts/airtel-ec200u <<EOF
 ABORT "BUSY"
 ABORT "NO CARRIER"
 ABORT "NO DIALTONE"
@@ -93,7 +67,7 @@ OK ATD*99#
 CONNECT ""
 EOF
 
-cat >/etc/ppp/peers/airtel-ec200u <<EOF
+    cat >/etc/ppp/peers/airtel-ec200u <<EOF
 /dev/ttyUSB5
 115200
 connect "/usr/sbin/chat -v -f /etc/chatscripts/airtel-ec200u"
@@ -114,17 +88,55 @@ ipcp-accept-local
 ipcp-accept-remote
 EOF
 
-chmod 600 /etc/chatscripts/airtel-ec200u /etc/ppp/peers/airtel-ec200u
-pkill -f "pppd call airtel-ec200u" 2>/dev/null || true
-pon airtel-ec200u || pppd call airtel-ec200u
-sleep 15
+    chmod 600 /etc/chatscripts/airtel-ec200u /etc/ppp/peers/airtel-ec200u
+    pkill -f "pppd call airtel-ec200u" 2>/dev/null || true
+    poff airtel-ec200u 2>/dev/null || true
+    pon airtel-ec200u || pppd call airtel-ec200u
+    sleep 15
 
-if ip addr show ppp0 >/dev/null 2>&1; then
-    [ -f /etc/ppp/resolv.conf ] && cp /etc/ppp/resolv.conf /etc/resolv.conf
-    echo "PPP LTE is up:"
-    ip addr show ppp0
-    ip route
-else
+    if ip addr show ppp0 >/dev/null 2>&1; then
+        [ -f /etc/ppp/resolv.conf ] && cp /etc/ppp/resolv.conf /etc/resolv.conf
+        grep -q "8.8.8.8" /etc/resolv.conf 2>/dev/null || echo "nameserver 8.8.8.8" >>/etc/resolv.conf
+        echo "PPP LTE is up:"
+        ip addr show ppp0
+        ip route
+        return 0
+    fi
+
     echo "PPP did not create ppp0. Check /var/log/syslog for pppd/chat output." >&2
-    exit 1
+    return 1
+}
+
+if [ -n "$MODEM_ID" ]; then
+
+    echo "Detected modem $MODEM_ID"
+    mmcli -m "$MODEM_ID" --enable >/dev/null 2>&1 || true
+
+    if nmcli -t -f NAME connection show | grep -qx "$CON_NAME"; then
+        nmcli connection modify "$CON_NAME" \
+            gsm.apn "$APN" \
+            connection.autoconnect yes \
+            ipv4.method auto \
+            ipv6.method ignore
+    else
+        nmcli connection add type gsm ifname "*" con-name "$CON_NAME" apn "$APN" \
+            connection.autoconnect yes \
+            ipv4.method auto \
+            ipv6.method ignore
+    fi
+
+    nmcli radio wwan on || true
+    if ! nmcli connection up "$CON_NAME"; then
+        echo "NetworkManager GSM activation failed; falling back to PPP." >&2
+        start_ppp_fallback
+        exit $?
+    fi
+
+    echo "LTE status:"
+    nmcli -f GENERAL.STATE,GENERAL.DEVICE,IP4.ADDRESS connection show "$CON_NAME" || true
+    mmcli -m "$MODEM_ID" --signal-get >/dev/null 2>&1 && mmcli -m "$MODEM_ID" --signal-get || true
+    exit 0
 fi
+
+echo "No ModemManager modem found; falling back to PPP."
+start_ppp_fallback

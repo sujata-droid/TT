@@ -28,25 +28,14 @@
 
 #define ACQUISITION_HZ       50
 #define ACQUISITION_NS       (1000000000L / ACQUISITION_HZ)
-#define PRU0_DRAM_PHYS       0x4A300000UL
-#define PRU0_DRAM_SIZE       0x2000u
-#define ENC_A_PIN_STATE      "/sys/devices/platform/ocp/ocp:P9_27_pinmux/state"
-#define ENC_B_PIN_STATE      "/sys/devices/platform/ocp/ocp:P9_30_pinmux/state"
-#define ENCODER_PPR          1000
-#define ENCODER_QUADX        4
-#define ENCODER_WHEEL_CIRC   785.398f
-#define ENCODER_MM_PER_COUNT (ENCODER_WHEEL_CIRC / (ENCODER_PPR * ENCODER_QUADX))
 #define TWIST_HISTORY_MAX    200
 #define STATUS_CHECK_SECS    5
 
 static volatile sig_atomic_t g_run = 1;
 
-static int g_mem_fd = -1;
 static int g_shm_fd = -1;
 static RailSharedFrame *g_frame = NULL;
 static SCL3300 g_scl;
-static volatile uint32_t *g_pru_dram = NULL;
-static volatile uint8_t g_encoder_ok = 0u;
 
 typedef struct { float cl_mm; float ch_m; } CLSample;
 static CLSample g_hist[TWIST_HISTORY_MAX];
@@ -66,75 +55,6 @@ static void ts_add_ns(struct timespec *ts, long ns) {
         ts->tv_nsec -= 1000000000L;
         ts->tv_sec++;
     }
-}
-
-static int write_text_file(const char *path, const char *value) {
-    int fd = open(path, O_WRONLY);
-    ssize_t n;
-    if (fd < 0) {
-        fprintf(stderr, "[ENC] open(%s) failed: %s\n", path, strerror(errno));
-        return -1;
-    }
-    n = write(fd, value, strlen(value));
-    close(fd);
-    if (n < 0 || (size_t)n != strlen(value)) {
-        fprintf(stderr, "[ENC] write(%s=%s) failed: %s\n",
-                path, value, strerror(errno));
-        return -1;
-    }
-    return 0;
-}
-
-static int encoder_init(void) {
-    g_mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
-    if (g_mem_fd < 0) {
-        fprintf(stderr, "[ENC] /dev/mem open failed: %s\n", strerror(errno));
-        return -1;
-    }
-
-    if (write_text_file(ENC_A_PIN_STATE, "pruin") != 0 ||
-        write_text_file(ENC_B_PIN_STATE, "pruin") != 0) {
-        fprintf(stderr, "[ENC] pinmux warning: expected P9_27/P9_30 in pruin mode\n");
-    }
-
-    g_pru_dram = (volatile uint32_t *)mmap(
-        NULL, PRU0_DRAM_SIZE, PROT_READ, MAP_SHARED, g_mem_fd, (off_t)PRU0_DRAM_PHYS);
-    if (g_pru_dram == MAP_FAILED) {
-        fprintf(stderr, "[ENC] PRU0 DRAM mmap failed: %s\n", strerror(errno));
-        g_pru_dram = NULL;
-        close(g_mem_fd);
-        g_mem_fd = -1;
-        return -1;
-    }
-
-    g_encoder_ok = (g_pru_dram[1] == 1u) ? 1u : 0u;
-    printf("[ENC] PRU quadrature mapped at 0x%08lx. status=%u count=%d sample_us=%u\n",
-           (unsigned long)PRU0_DRAM_PHYS, g_pru_dram[1],
-           (int32_t)g_pru_dram[0], g_pru_dram[2]);
-    return 0;
-}
-
-static void encoder_cleanup(void) {
-    g_encoder_ok = 0u;
-    if (g_pru_dram && g_pru_dram != MAP_FAILED) {
-        munmap((void *)g_pru_dram, PRU0_DRAM_SIZE);
-        g_pru_dram = NULL;
-    }
-    if (g_mem_fd >= 0) {
-        close(g_mem_fd);
-        g_mem_fd = -1;
-    }
-}
-
-static int32_t encoder_count(void) {
-    if (!g_pru_dram) return 0;
-    return (int32_t)g_pru_dram[0];
-}
-
-static bool encoder_running(void) {
-    if (!g_pru_dram) return false;
-    g_encoder_ok = (g_pru_dram[1] == 1u) ? 1u : 0u;
-    return g_encoder_ok != 0u;
 }
 
 static float compute_twist(float cl_mm, float ch_m) {
@@ -245,7 +165,6 @@ static void shm_publish(
 
 int main(void) {
     int scl_ok_init;
-    int32_t enc_base;
     bool first = true;
     float last_cl = 0.0f;
     int hc_cnt = 0;
@@ -271,28 +190,23 @@ int main(void) {
     if (shm_init() != 0) return 1;
 
     printf("=== Rail Inspection Sensor Service (shared memory) ===\n");
-    printf("Gauge: %.0f mm | %.4f mm/count | %d Hz\n",
-           (double)GAUGE_MM, (double)ENCODER_MM_PER_COUNT, ACQUISITION_HZ);
+    printf("Gauge: %.0f mm | encoder removed | %d Hz\n",
+           (double)GAUGE_MM, ACQUISITION_HZ);
     printf("[SHM] Publishing latest frame at %s\n", RAIL_SHM_PATH);
 
     scl_ok_init = (scl3300_open(&g_scl) == 0);
     if (!scl_ok_init) {
         fprintf(stderr, "[MAIN] SCL3300 init failed. Running with last-good zeros.\n");
     }
-    if (encoder_init() < 0) {
-        fprintf(stderr, "[MAIN] Encoder init failed. Count will remain 0.\n");
-    }
+    printf("[ENC] Rotary encoder removed. Publishing chainage=0 and encoder_ok=1.\n");
 
-    enc_base = encoder_count();
     clock_gettime(CLOCK_MONOTONIC, &next);
     printf("[MAIN] Running. Ctrl+C to stop.\n");
 
     while (g_run) {
         float cl_mm = last_cl;
         uint8_t scl_status = 0;
-        int32_t enc_now;
-        int32_t enc_delta;
-        float chainage_m;
+        float chainage_m = 0.0f;
         float twist;
 
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
@@ -307,9 +221,6 @@ int main(void) {
             }
         }
 
-        enc_now = encoder_count();
-        enc_delta = enc_now - enc_base;
-        chainage_m = (float)abs(enc_delta) * ENCODER_MM_PER_COUNT / 1000.0f;
         twist = first ? 0.0f : compute_twist(cl_mm, chainage_m);
         first = false;
 
@@ -326,15 +237,14 @@ int main(void) {
             (double)twist,
             (double)chainage_m,
             (double)GAUGE_MM,
-            enc_now,
+            0,
             scl_status,
-            encoder_running() ? 1u : 0u
+            1u
         );
     }
 
     shm_publish(mono_us(), 0.0, 0.0, 0.0, (double)GAUGE_MM, 0, 0u, 0u);
     scl3300_close(&g_scl);
-    encoder_cleanup();
     shm_cleanup();
     printf("[MAIN] Clean exit.\n");
     return 0;
