@@ -45,6 +45,8 @@ import datetime
 import signal
 import urllib.request
 import urllib.error
+import mmap
+import struct
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -58,15 +60,19 @@ from PyQt5.QtGui import (
 )
 
 # ── Configuration ──────────────────────────────────────────────────────
-SOCKET_PATH      = "/tmp/rail_sensor.sock"
+SHM_PATH         = "/dev/shm/rail_sensor_shm"
+SHM_MAGIC        = 0x5241494c
+SHM_VERSION      = 1
+SHM_STRUCT       = struct.Struct("<IIIIqddddiBBBB")
 SURVEY_DIR       = os.path.expanduser("~/surveys")
 CLOUD_URL        = os.environ.get("RAIL_CLOUD_URL",
-                                   "https://thread-xxxx.onrender.com/api/survey")
+                                   "https://thread-qm2o.onrender.com/api/survey")
 CLOUD_RETRIES    = 5
 DISPLAY_HZ       = 10
-SOCKET_RETRY_S   = 3.0
+SENSOR_RETRY_S   = 3.0
 CSV_FLUSH_ROWS   = 100
 GAUGE_MM_CONST   = 1676.0
+CSV_QUEUE_MAX    = 10000
 
 # ── Shared state (latest frame, protected by a simple lock) ───────────
 _latest_lock  = threading.Lock()
@@ -87,8 +93,8 @@ def get_latest():
 # ═══════════════════════════════════════════════════════════════════════
 class SensorThread(QThread):
     """
-    Connects to the C sensor_service via Unix domain socket.
-    Parses each newline-delimited JSON frame and puts it on the CSV queue.
+    Connects to the C sensor_service via POSIX shared memory.
+    Copies coherent frames and puts them on the CSV queue.
 
     WHY Unix socket and not SPI/GPIO directly in Python?
     Because Python cannot run SCHED_FIFO reliably -- the GIL and GC
@@ -107,70 +113,108 @@ class SensorThread(QThread):
     def stop(self):
         self._stop = True
 
+    def _queue_csv_frame(self, frame: dict):
+        try:
+            self._csv_q.put_nowait(frame)
+        except queue.Full:
+            # Keep live acquisition running if the disk writer falls behind.
+            try:
+                self._csv_q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._csv_q.put_nowait(frame)
+            except queue.Full:
+                pass
+
     def run(self):
-        sock = None
-        buf  = b""
+        shm_file = None
+        shm = None
+        last_update_count = None
 
         while not self._stop:
-            # ── Connect ──────────────────────────────────────────────
-            if sock is None:
+            # Connect
+            if shm is None:
                 try:
-                    sock = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-                    sock.connect(SOCKET_PATH)
-                    sock.settimeout(2.0)
+                    shm_file = open(SHM_PATH, "rb")
+                    shm = mmap.mmap(shm_file.fileno(), SHM_STRUCT.size, access=mmap.ACCESS_READ)
                     self.status_change.emit("SENSOR: CONNECTED")
-                    print("[SensorThread] Connected to sensor_service")
-                    buf = b""
+                    print("[SensorThread] Connected to sensor_service shared memory")
                 except Exception as e:
                     self.status_change.emit("SENSOR: WAITING FOR SERVICE...")
-                    print("[SensorThread] Socket not ready: {}".format(e))
-                    sock = None
-                    time.sleep(SOCKET_RETRY_S)
+                    print("[SensorThread] Shared memory not ready: {}".format(e))
+                    try:
+                        if shm:
+                            shm.close()
+                    except Exception:
+                        pass
+                    try:
+                        if shm_file:
+                            shm_file.close()
+                    except Exception:
+                        pass
+                    shm = None
+                    shm_file = None
+                    time.sleep(SENSOR_RETRY_S)
                     continue
 
-            # ── Read ─────────────────────────────────────────────────
             try:
-                chunk = sock.recv(4096)
-            except socket.timeout:
-                continue
+                vals1 = SHM_STRUCT.unpack(shm[:SHM_STRUCT.size])
+                seq1 = vals1[2]
+                if seq1 & 1:
+                    time.sleep(0.01)
+                    continue
+                vals2 = SHM_STRUCT.unpack(shm[:SHM_STRUCT.size])
+                if vals2[2] != seq1 or (vals2[2] & 1):
+                    time.sleep(0.01)
+                    continue
             except Exception as e:
-                print("[SensorThread] Recv error: {}".format(e))
-                try: sock.close()
-                except: pass
-                sock = None
+                print("[SensorThread] Shared memory read error: {}".format(e))
+                try:
+                    shm.close()
+                except Exception:
+                    pass
+                try:
+                    shm_file.close()
+                except Exception:
+                    pass
+                shm = None
+                shm_file = None
                 self.status_change.emit("SENSOR: RECONNECTING...")
                 time.sleep(1.0)
                 continue
 
-            if not chunk:
-                # Connection closed by server
-                try: sock.close()
-                except: pass
-                sock = None
-                self.status_change.emit("SENSOR: DISCONNECTED")
-                time.sleep(SOCKET_RETRY_S)
+            (magic, version, _seq, update_count, ts_us, cl_mm, tw_mm_m,
+             ch_m, gauge_mm, _enc_count, scl_ok, enc_ok, service_ok,
+             _reserved) = vals2
+
+            if magic != SHM_MAGIC or version != SHM_VERSION or not service_ok:
+                self.status_change.emit("SENSOR: WAITING FOR VALID FRAME...")
+                time.sleep(0.2)
                 continue
 
-            buf += chunk
-            # Parse all complete newline-terminated frames
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                if not line:
-                    continue
-                try:
-                    frame = json.loads(line.decode("ascii"))
-                    set_latest(frame)
-                    self._csv_q.put_nowait(frame)
-                    # Only emit signal if receiver can keep up
-                    if not self.sensor_update.receivers(self.sensor_update):
-                        pass
-                    else:
-                        self.sensor_update.emit(frame)
-                except (json.JSONDecodeError, UnicodeDecodeError) as ex:
-                    print("[SensorThread] Parse error: {}".format(ex))
+            if update_count != last_update_count:
+                last_update_count = update_count
+                frame = {
+                    "ts": ts_us,
+                    "cl": cl_mm,
+                    "tw": tw_mm_m,
+                    "ch": ch_m,
+                    "ga": gauge_mm,
+                    "s0": scl_ok,
+                    "s1": enc_ok,
+                }
+                set_latest(frame)
+                self._queue_csv_frame(frame)
+                self.sensor_update.emit(frame)
 
-        if sock:
-            try: sock.close()
+            time.sleep(0.01)
+
+        if shm:
+            try: shm.close()
+            except: pass
+        if shm_file:
+            try: shm_file.close()
             except: pass
         print("[SensorThread] Stopped.")
 
@@ -198,48 +242,58 @@ class CSVWriterThread(QThread):
         self._stop = True
 
     def run(self):
-        os.makedirs(SURVEY_DIR, exist_ok=True)
+        try:
+            os.makedirs(SURVEY_DIR, exist_ok=True)
+        except Exception as e:
+            print("[CSVWriter] Cannot create survey directory {}: {}".format(
+                  SURVEY_DIR, e))
+            return
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.csv_path = os.path.join(SURVEY_DIR, "survey_{}.csv".format(ts))
 
         fieldnames = ["timestamp_us", "cross_level_mm", "twist_mm_per_m",
                       "chainage_m", "gauge_mm", "scl3300_ok", "encoder_ok"]
 
-        with open(self.csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            row_count  = 0
-            unflushed  = 0
+        try:
+            with open(self.csv_path, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                row_count  = 0
+                unflushed  = 0
 
-            while not self._stop or not self._q.empty():
-                try:
-                    frame = self._q.get(timeout=0.5)
-                except queue.Empty:
-                    if unflushed > 0:
+                while not self._stop or not self._q.empty():
+                    try:
+                        frame = self._q.get(timeout=0.5)
+                    except queue.Empty:
+                        if unflushed > 0:
+                            f.flush()
+                            unflushed = 0
+                        continue
+
+                    writer.writerow({
+                        "timestamp_us":   frame.get("ts",  0),
+                        "cross_level_mm": "{:.4f}".format(frame.get("cl", 0.0)),
+                        "twist_mm_per_m": "{:.4f}".format(frame.get("tw", 0.0)),
+                        "chainage_m":     "{:.4f}".format(frame.get("ch", 0.0)),
+                        "gauge_mm":       "{:.1f}".format(frame.get("ga", GAUGE_MM_CONST)),
+                        "scl3300_ok":     frame.get("s0", 0),
+                        "encoder_ok":     frame.get("s1", 0),
+                    })
+                    row_count  += 1
+                    unflushed  += 1
+
+                    if unflushed >= CSV_FLUSH_ROWS:
                         f.flush()
+                        os.fsync(f.fileno())
                         unflushed = 0
-                    continue
 
-                writer.writerow({
-                    "timestamp_us":   frame.get("ts",  0),
-                    "cross_level_mm": "{:.4f}".format(frame.get("cl", 0.0)),
-                    "twist_mm_per_m": "{:.4f}".format(frame.get("tw", 0.0)),
-                    "chainage_m":     "{:.4f}".format(frame.get("ch", 0.0)),
-                    "gauge_mm":       "{:.1f}".format(frame.get("ga", GAUGE_MM_CONST)),
-                    "scl3300_ok":     frame.get("s0", 0),
-                    "encoder_ok":     frame.get("s1", 0),
-                })
-                row_count  += 1
-                unflushed  += 1
-
-                if unflushed >= CSV_FLUSH_ROWS:
+                # Final flush
+                if unflushed > 0:
                     f.flush()
-                    os.fsync(f.fileno())
-                    unflushed = 0
-
-            # Final flush
-            f.flush()
-            os.fsync(f.fileno())
+                os.fsync(f.fileno())
+        except Exception as e:
+            print("[CSVWriter] Write error: {}".format(e))
+            return
 
         print("[CSVWriter] Saved {} rows to {}".format(row_count, self.csv_path))
 
@@ -570,7 +624,7 @@ class MainWindow(QMainWindow):
         root.addWidget(gauge_lbl)
 
         # ── Threads & queues ─────────────────────────────────────────
-        self._csv_q     = queue.Queue(maxsize=10000)
+        self._csv_q     = queue.Queue(maxsize=CSV_QUEUE_MAX)
         self._sensor_th = SensorThread(self._csv_q)
         self._csv_th    = CSVWriterThread(self._csv_q)
         self._cloud_th  = None
@@ -608,11 +662,10 @@ class MainWindow(QMainWindow):
         self._led_scl.set_ok(bool(f.get("s0", 0)))
         self._led_enc.set_ok(bool(f.get("s1", 0)))
 
-        # Timestamp from microseconds
+        # Sensor service timestamp is CLOCK_MONOTONIC in microseconds.
         ts_us = f.get("ts", 0)
-        dt    = datetime.datetime.fromtimestamp(ts_us / 1e6)
-        self._lbl_ts.setText(dt.strftime("%H:%M:%S.") +
-                             "{:03d}".format(dt.microsecond // 1000))
+        age_ms = max(0, int((time.monotonic() * 1000000.0 - ts_us) / 1000.0))
+        self._lbl_ts.setText("age {:d} ms".format(age_ms))
 
         self._frame_count += 1
 
@@ -621,13 +674,17 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         print("[Main] Shutting down...")
 
+        self._timer.stop()
+
         # Stop acquisition
         self._sensor_th.stop()
-        self._sensor_th.wait(3000)
+        if not self._sensor_th.wait(3000):
+            print("[Main] Sensor thread did not stop within timeout.")
 
         # Stop CSV writer (it will flush remaining rows)
         self._csv_th.stop()
-        self._csv_th.wait(10000)
+        if not self._csv_th.wait(10000):
+            print("[Main] CSV writer did not stop within timeout.")
 
         csv_path = self._csv_th.csv_path
 

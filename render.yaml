@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: thread-qm2o
+    runtime: python
+    rootDir: rail_inspection/cloud
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 app:app
+    envVars:
+      - key: STORAGE_DIR
+        value: /data
+    disk:
+      name: rail-surveys
+      mountPath: /data
+      sizeGB: 1

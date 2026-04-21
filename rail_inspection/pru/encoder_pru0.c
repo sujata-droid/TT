@@ -16,13 +16,13 @@
  * WIRING
  * ------
  *   Encoder Channel A → P9_27  (pr1_pru0_pru_r31 bit 5)
- *   Encoder Channel B → P9_42A (pr1_pru0_pru_r31 bit 0)
+ *   Encoder Channel B → P9_30  (pr1_pru0_pru_r31 bit 2)
  *   Encoder GND       → GND
  *   Encoder VCC       → 3.3 V
  *
  * CONFIG-PIN REQUIRED (run once in setup.sh):
  *   config-pin P9_27 pruin
- *   config-pin P9_42 pruin
+ *   config-pin P9_30 pruin
  *
  * MEMORY MAP (ARM sees PRU0 Data RAM at 0x4A300000)
  * ------------------------------------------------
@@ -53,6 +53,7 @@
 
 #include <stdint.h>
 #include <pru_cfg.h>      /* CT_CFG register set */
+#include "resource_table_empty.h"
 
 /* ── PRU R31 is the input register (maps directly to PRU input pins) ─── */
 volatile register uint32_t __R31;
@@ -66,7 +67,7 @@ volatile register uint32_t __R30;   /* output register – unused here     */
 
 /* ── Encoder pin bit indices in R31 ──────────────────────────────────── */
 #define ENC_A_BIT   5u   /* P9_27  =  pr1_pru0_pru_r31_5 */
-#define ENC_B_BIT   0u   /* P9_42A =  pr1_pru0_pru_r31_0 */
+#define ENC_B_BIT   2u   /* P9_30  =  pr1_pru0_pru_r31_2 */
 
 /*
  * Sample period: 2000 PRU cycles = 10 µs at 200 MHz.

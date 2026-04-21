@@ -111,7 +111,7 @@ connector (J2). AVSS/AVDD on top-right. Match exactly as above.
 Encoder Pin   →   BBB Pin   →   PRU R31 Bit
 ────────────────────────────────────────────
 Channel A     →   P9_27     →   bit 5
-Channel B     →   P9_42     →   bit 0
+Channel B     →   P9_30     →   bit 2
 GND           →   P9_1      →   GND
 VCC           →   P9_3      →   3.3 V (or 5V if encoder needs it)
 ```

@@ -22,8 +22,8 @@
  * ----------------------------------
  *   Bit 31:     RW    (0=Read, 1=Write)
  *   Bits 30-26: ADDR  (5-bit register address)
- *   Bits 25-10: DATA  (16-bit payload)
- *   Bits 9-8:   RS    (return status from sensor, in RX frames)
+ *   Bits 25-24: RS    (return status from sensor, in RX frames)
+ *   Bits 23-8:  DATA  (16-bit payload)
  *   Bits 7-0:   CRC   (over bytes [3:1])
  *
  * RS FIELD VALUES
@@ -35,12 +35,12 @@
  *
  * CROSS-LEVEL FORMULA
  * -------------------
- *   Sensitivity in Mode 1 = 1000 LSB/g
+ *   Sensitivity in Mode 1 = 6000 LSB/g
  *   If tilted by angle theta from horizontal:
- *     ACC_X_raw = 1000 * sin(theta)
+ *     ACC_X_raw = 6000 * sin(theta)
  *   Cross-level (mm) = gauge_mm * sin(theta)
- *                    = gauge_mm * (ACC_X_raw / 1000.0f)  [exact for small angles]
- *                    = 1676 * (raw / 1000)               [for BG rail]
+ *                    = gauge_mm * (ACC_X_raw / 6000.0f)
+ *                    = 1676 * (raw / 6000)               [for BG rail]
  *
  * TWIST FORMULA
  *   twist (mm/m) = delta_cross_level_mm / delta_chainage_m
@@ -93,7 +93,7 @@
 #define RS_SOFT_ERR  0x03
 
 /* Physical constants */
-#define SCL3300_SENSITIVITY   1000.0f   /* LSB per g in Mode 1          */
+#define SCL3300_SENSITIVITY   6000.0f   /* LSB per g in Mode 1          */
 #define GAUGE_MM              1676.0f   /* Indian BG rail gauge (mm)    */
 #define TWIST_BASELINE_M      3.0f      /* Twist computation baseline   */
 

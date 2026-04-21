@@ -54,6 +54,7 @@ def _survey_list():
     return out
 
 @app.route("/")
+@app.route("/dashboard")
 def dashboard():
     surveys = _survey_list()
     return render_template_string(DASHBOARD_HTML, surveys=surveys, fc=len(surveys),

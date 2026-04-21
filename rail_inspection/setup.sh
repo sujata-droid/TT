@@ -74,9 +74,9 @@ $CONFIG_PIN P9_22 spi_sclk  && ok "P9_22 -> spi_sclk (SCL3300 SCK)" || warn "P9_
 
 # Rotary encoder PRU input pins
 # P9_27 = pr1_pru0_pru_r31_5 -> Encoder Channel A
-# P9_42 = pr1_pru0_pru_r31_0 -> Encoder Channel B
+# P9_30 = pr1_pru0_pru_r31_2 -> Encoder Channel B
 $CONFIG_PIN P9_27 pruin     && ok "P9_27 -> pruin   (Encoder A)"     || warn "P9_27 config failed"
-$CONFIG_PIN P9_42 pruin     && ok "P9_42 -> pruin   (Encoder B)"     || warn "P9_42 config failed"
+$CONFIG_PIN P9_30 pruin     && ok "P9_30 -> pruin   (Encoder B)"     || warn "P9_30 config failed"
 
 # Verify spidev appeared
 if [ -e /dev/spidev0.0 ]; then
@@ -207,7 +207,10 @@ echo " OR run both with screen/tmux:"
 echo "   sudo ./sensor_board/sensor_service &"
 echo "   python3 main_board/main.py"
 echo ""
-echo " CLOUD URL (set before running main.py):"
-echo "   export RAIL_CLOUD_URL=https://YOUR-APP.onrender.com/api/survey"
+echo " SENSOR STATUS CHECK:"
+echo "   python3 sensor_status.py"
+echo ""
+echo " CLOUD URL (default endpoint is already baked into main_board/main.py):"
+echo "   export RAIL_CLOUD_URL=https://thread-qm2o.onrender.com/api/survey"
 echo ""
 echo "============================================================"

@@ -3,6 +3,7 @@
  */
 #include "scl3300.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
@@ -70,8 +71,8 @@ static int spi_xfer32(int fd, uint32_t tx, uint32_t *rx_out) {
     return 0;
 }
 
-static inline uint8_t frame_rs(uint32_t rx)   { return (uint8_t)((rx >>  8) & 0x03u); }
-static inline int16_t frame_data(uint32_t rx)  { return (int16_t)((rx >> 10) & 0xFFFFu); }
+static inline uint8_t frame_rs(uint32_t rx)   { return (uint8_t)((rx >> 24) & 0x03u); }
+static inline int16_t frame_data(uint32_t rx)  { return (int16_t)((rx >>  8) & 0xFFFFu); }
 static inline int     frame_crc_ok(uint32_t rx) {
     uint8_t b0=(uint8_t)((rx>>24)&0xFF), b1=(uint8_t)((rx>>16)&0xFF),
             b2=(uint8_t)((rx>>8)&0xFF),  b3=(uint8_t)(rx&0xFF);
@@ -153,6 +154,12 @@ int scl3300_read_cross_level(SCL3300 *dev, float *out_mm) {
     uint32_t rx;
     if (spi_xfer32(dev->spi_fd, CMD_READ_ACC_X, &rx) < 0) {
         dev->healthy = 0; return -1;
+    }
+    static int debug_count = 0;
+    if (debug_count < 20 && getenv("SCL3300_DEBUG")) {
+        fprintf(stderr, "[SCL3300DBG] rx=0x%08X rs=0x%02X data=%d crc=%d\n",
+                rx, frame_rs(rx), (int)frame_data(rx), frame_crc_ok(rx));
+        debug_count++;
     }
     if (!frame_crc_ok(rx)) {
         if (++dev->crc_error_count >= SCL3300_MAX_CRC_ERRORS) {
