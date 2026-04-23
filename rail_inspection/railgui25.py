@@ -1302,35 +1302,33 @@ class TopBar(QWidget):
         p.setPen(QColor("#A8C8A8") if self._sensor_ok else QColor("#FFAA44"))
         p.drawText(x, 0, 180, H, Qt.AlignVCenter | Qt.AlignLeft, self._sensor_txt)
 
-        right_pad = 18
-        battery_w = 118
-        clock_w = 140
+        right_pad = 78
+        clock_w = 138
+        battery_w = 128
         gap = 12
         sep_gap = 10
-        right_x = W - right_pad
-
-        p.setFont(f_battery)
-        p.setPen(QColor("#A8C8A8"))
-        battery_x = right_x - battery_w
-        p.drawText(battery_x, 0, battery_w, H,
-                   Qt.AlignVCenter | Qt.AlignRight, "BAT " + self._bat_txt)
-
-        sep_x = battery_x - sep_gap
-        p.fillRect(sep_x, cy - 8, 1, 16, QColor("#3A4555"))
-
-        p.setFont(f_title)
-        p.setPen(QColor("#F3F6FB"))
-        title_left = 80
-        title_right = sep_x - gap
-        if title_right > title_left:
-            p.drawText(QRect(title_left, 0, title_right - title_left, H),
-                       Qt.AlignCenter, self._title_txt)
 
         p.setFont(f_clock)
         p.setPen(QColor("#FFFFFF"))
-        clock_x = battery_x - sep_gap - gap - clock_w
+        clock_x = W - right_pad - clock_w
         p.drawText(clock_x, 0, clock_w, H,
                    Qt.AlignVCenter | Qt.AlignRight, self._time_txt)
+
+        sep_x = clock_x - sep_gap
+        p.fillRect(sep_x, cy - 8, 1, 16, QColor("#3A4555"))
+
+        p.setFont(f_battery)
+        p.setPen(QColor("#A8C8A8"))
+        battery_x = sep_x - gap - battery_w
+        p.drawText(battery_x, 0, battery_w, H,
+                   Qt.AlignVCenter | Qt.AlignRight, "▮ " + self._bat_txt)
+
+        p.setFont(f_title)
+        p.setPen(QColor("#F3F6FB"))
+        title_w = 280
+        title_x = max(80, (W - title_w) // 2)
+        p.drawText(QRect(title_x, 0, title_w, H),
+                   Qt.AlignCenter, self._title_txt)
 
         p.end()
 
@@ -2724,38 +2722,38 @@ class DashboardPage(QWidget):
 
         # ── Bottom control bar — compact, pulled up ───────────────────────────
         bot_w = QWidget()
-        bot_w.setFixedHeight(82)
+        bot_w.setFixedHeight(92)
         bot_w.setStyleSheet("background:#ECEFF4;")
         bot = QHBoxLayout(bot_w)
-        bot.setContentsMargins(8, 8, 8, 8)
-        bot.setSpacing(14)
+        bot.setContentsMargins(10, 10, 10, 10)
+        bot.setSpacing(18)
 
         self._toggle = QPushButton("▶  START")
-        self._toggle.setFixedHeight(64)
-        self._toggle.setMinimumWidth(150)
+        self._toggle.setFixedHeight(72)
+        self._toggle.setMinimumWidth(170)
         self._toggle.setStyleSheet(self._ss_start())
         self._toggle.clicked.connect(self._do_toggle)
 
         self._pause_btn = QPushButton("⏸  PAUSE")
-        self._pause_btn.setFixedHeight(64)
-        self._pause_btn.setMinimumWidth(150)
+        self._pause_btn.setFixedHeight(72)
+        self._pause_btn.setMinimumWidth(170)
         self._pause_btn.setStyleSheet(self._ss_pause())
         self._pause_btn.setEnabled(False)
         self._pause_btn.clicked.connect(self._do_pause)
 
         vsep = QFrame()
-        vsep.setFixedSize(1, 44)
+        vsep.setFixedSize(1, 50)
         vsep.setStyleSheet("background:#DDE3EA; border:none;")
 
         self._entry_btn = QPushButton("DATA ENTRY")
-        self._entry_btn.setFixedHeight(64)
-        self._entry_btn.setMinimumWidth(170)
+        self._entry_btn.setFixedHeight(72)
+        self._entry_btn.setMinimumWidth(190)
         self._entry_btn.setStyleSheet(self._ss_action(CYAN))
         self._entry_btn.clicked.connect(self.sig_entry)
 
         self._cal_btn = QPushButton("CALIBRATE")
-        self._cal_btn.setFixedHeight(64)
-        self._cal_btn.setMinimumWidth(150)
+        self._cal_btn.setFixedHeight(72)
+        self._cal_btn.setMinimumWidth(170)
         self._cal_btn.setStyleSheet(self._ss_action(AMBER))
         self._cal_btn.clicked.connect(self.sig_cal)
 
@@ -2783,7 +2781,7 @@ class DashboardPage(QWidget):
             f" background:{bg}; border:2px solid {color};"
             f" border-radius:8px; color:{color};"
             f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
-            f" font-size:14pt; font-weight:bold; padding:0px 22px;}}"
+            f" font-size:15pt; font-weight:bold; padding:0px 26px;}}"
             f"QPushButton:pressed{{"
             f" background:{color}; color:#FFFFFF; border:2px solid {color};}}"
             f"QPushButton:disabled{{"
@@ -2795,7 +2793,7 @@ class DashboardPage(QWidget):
             f" background:{NEON}; border:2px solid {NEON};"
             f" border-radius:8px; color:#FFFFFF;"
             f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
-            f" font-size:14pt; font-weight:bold; padding:0px 22px;}}"
+            f" font-size:15pt; font-weight:bold; padding:0px 26px;}}"
             f"QPushButton:pressed{{"
             f" background:#145E35; border-color:#145E35; color:#FFFFFF;}}")
 
@@ -2805,7 +2803,7 @@ class DashboardPage(QWidget):
             f" background:{RED}; border:2px solid {RED};"
             f" border-radius:8px; color:#FFFFFF;"
             f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
-            f" font-size:14pt; font-weight:bold; padding:0px 22px;}}"
+            f" font-size:15pt; font-weight:bold; padding:0px 26px;}}"
             f"QPushButton:pressed{{"
             f" background:#8B1A1A; border-color:#8B1A1A; color:#FFFFFF;}}")
 
@@ -2815,7 +2813,7 @@ class DashboardPage(QWidget):
             f" background:{AMBER_LT}; border:2px solid {AMBER};"
             f" border-radius:8px; color:{AMBER};"
             f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
-            f" font-size:14pt; font-weight:bold; padding:0px 22px;}}"
+            f" font-size:15pt; font-weight:bold; padding:0px 26px;}}"
             f"QPushButton:pressed{{"
             f" background:{AMBER}; color:#FFFFFF; border:2px solid {AMBER};}}"
             f"QPushButton:disabled{{"
@@ -2827,7 +2825,7 @@ class DashboardPage(QWidget):
             f" background:{CYAN}; border:2px solid {CYAN};"
             f" border-radius:8px; color:#FFFFFF;"
             f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
-            f" font-size:14pt; font-weight:bold; padding:0px 22px;}}"
+            f" font-size:15pt; font-weight:bold; padding:0px 26px;}}"
             f"QPushButton:pressed{{"
             f" background:#0D4A8A; border-color:#0D4A8A; color:#FFFFFF;}}")
 
