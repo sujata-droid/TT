@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Rail Track Geometry Inspection System
-Target  : BeagleBone Black Industrial | Ubuntu | 1024×600 HDMI/Touch
+Target  : BeagleBone Black Industrial | Ubuntu | 1024×768 HDMI/Touch
 Stack   : PyQt5 | Python 3.8+
 Version : 5.1.0 — fixed layout: 3-panel DataEntry, popup keyboard, buttons up
 
@@ -51,7 +51,7 @@ RED_LT   = "#FFEBEE"
 WARN     = "#E65100"
 WARN_LT  = "#FFF3E0"
 
-W, H = 1024, 600
+W, H = 1024, 768
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  GLOBAL STYLESHEET
@@ -2051,7 +2051,7 @@ class DisplayCal(QWidget):
 
         for label, options, color, attr in [
             ("Output:",     ["HDMI-0","HDMI-1","HDMI-A-1","DVI-0"],        AMBER, "_out"),
-            ("Resolution:", ["1024x600","1280x720","800x480","1920x1080"],  AMBER, "_res"),
+            ("Resolution:", ["1024x768","800x600","640x480","1280x720"],     AMBER, "_res"),
             ("Rotation:",   ["normal","left","right","inverted"],           AMBER, "_rot"),
         ]:
             row = QHBoxLayout()
@@ -2878,7 +2878,7 @@ class DashboardPage(QWidget):
 # ═════════════════════════════════════════════════════════════════════════════
 #  MAIN APPLICATION
 # ═════════════════════════════════════════════════════════════════════════════
-SCREEN_W, SCREEN_H = 1024, 600
+SCREEN_W, SCREEN_H = 1024, 768
 
 
 class TrackApp(QWidget):
