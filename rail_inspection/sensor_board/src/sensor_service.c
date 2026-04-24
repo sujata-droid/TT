@@ -30,6 +30,7 @@
 #define ACQUISITION_NS       (1000000000L / ACQUISITION_HZ)
 #define TWIST_HISTORY_MAX    200
 #define STATUS_CHECK_SECS    5
+#define CL_FILTER_TAPS       8
 
 static volatile sig_atomic_t g_run = 1;
 
@@ -40,8 +41,50 @@ static SCL3300 g_scl;
 typedef struct { float cl_mm; float ch_m; } CLSample;
 static CLSample g_hist[TWIST_HISTORY_MAX];
 static uint32_t g_hist_head = 0;
+static float g_cl_hist[CL_FILTER_TAPS];
+static uint32_t g_cl_hist_head = 0;
+static uint32_t g_cl_hist_count = 0;
 
 static void on_signal(int s) { (void)s; g_run = 0; }
+
+static float filter_cross_level(float cl_mm) {
+    float sum = 0.0f;
+    uint32_t i;
+
+    g_cl_hist[g_cl_hist_head] = cl_mm;
+    g_cl_hist_head = (g_cl_hist_head + 1u) % CL_FILTER_TAPS;
+    if (g_cl_hist_count < CL_FILTER_TAPS) g_cl_hist_count++;
+
+    for (i = 0; i < g_cl_hist_count; i++) {
+        sum += g_cl_hist[i];
+    }
+    return sum / (float)g_cl_hist_count;
+}
+
+static int run_quiet(const char *cmd) {
+    int rc = system(cmd);
+    if (rc == -1) return -1;
+    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
+    return -1;
+}
+
+static void ensure_spi_pinmux(void) {
+    if (getenv("RAIL_SKIP_PINMUX")) {
+        printf("[PINMUX] Skipping SPI pinmux because RAIL_SKIP_PINMUX is set.\n");
+        return;
+    }
+
+    printf("[PINMUX] Ensuring SPI0 pins are configured for SCL3300...\n");
+    if (run_quiet("config-pin P9_17 spi_cs >/dev/null 2>&1") != 0)
+        fprintf(stderr, "[PINMUX] Warning: failed to set P9_17 -> spi_cs\n");
+    if (run_quiet("config-pin P9_18 spi >/dev/null 2>&1") != 0)
+        fprintf(stderr, "[PINMUX] Warning: failed to set P9_18 -> spi\n");
+    if (run_quiet("config-pin P9_21 spi >/dev/null 2>&1") != 0)
+        fprintf(stderr, "[PINMUX] Warning: failed to set P9_21 -> spi\n");
+    if (run_quiet("config-pin P9_22 spi_sclk >/dev/null 2>&1") != 0)
+        fprintf(stderr, "[PINMUX] Warning: failed to set P9_22 -> spi_sclk\n");
+    usleep(50000);
+}
 
 static int64_t mono_us(void) {
     struct timespec ts;
@@ -188,6 +231,7 @@ int main(void) {
     signal(SIGTERM, on_signal);
 
     if (shm_init() != 0) return 1;
+    ensure_spi_pinmux();
 
     printf("=== Rail Inspection Sensor Service (shared memory) ===\n");
     printf("Gauge: %.0f mm | encoder removed | %d Hz\n",
@@ -220,6 +264,8 @@ int main(void) {
                 scl_status = 1u;
             }
         }
+
+        cl_mm = filter_cross_level(cl_mm);
 
         twist = first ? 0.0f : compute_twist(cl_mm, chainage_m);
         first = false;

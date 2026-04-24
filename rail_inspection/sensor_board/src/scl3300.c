@@ -79,6 +79,15 @@ static inline int     frame_crc_ok(uint32_t rx) {
     return b3 == scl3300_crc8(b0, b1, b2);
 }
 
+static int read_whoami(int fd, uint8_t *whoami_out) {
+    uint32_t rx;
+    if (spi_xfer32(fd, CMD_READ_WHOAMI, &rx) < 0) return -1;
+    if (spi_xfer32(fd, CMD_DUMMY, &rx) < 0) return -1;
+    if (!frame_crc_ok(rx) || frame_rs(rx) != RS_NORMAL) return -1;
+    *whoami_out = (uint8_t)(frame_data(rx) & 0xFF);
+    return 0;
+}
+
 int scl3300_open(SCL3300 *dev) {
     memset(dev, 0, sizeof(SCL3300));
     dev->spi_fd = -1;
@@ -109,8 +118,8 @@ int scl3300_open(SCL3300 *dev) {
     printf("[SCL3300] SW_RESET...\n");
     if (spi_xfer32(dev->spi_fd, CMD_SW_RESET,      &rx) < 0) goto fail;
     ms_sleep(SCL3300_RESET_DELAY_MS);
-    printf("[SCL3300] CHANGE_MODE1...\n");
-    if (spi_xfer32(dev->spi_fd, CMD_CHANGE_MODE1,  &rx) < 0) goto fail;
+    printf("[SCL3300] CHANGE_%s...\n", SCL3300_MODE_NAME);
+    if (spi_xfer32(dev->spi_fd, SCL3300_MODE_CMD,  &rx) < 0) goto fail;
     ms_sleep(SCL3300_MODE_DELAY_MS);
 
     /* Three-transfer pipeline flush to get actual STATUS */
@@ -134,6 +143,15 @@ int scl3300_open(SCL3300 *dev) {
         fprintf(stderr,
             "[SCL3300] HARD ERROR. Check AVDD=3.3V, AVSS/DVSS=GND, wiring.\n");
         goto fail;
+    }
+
+    {
+        uint8_t whoami = 0;
+        if (read_whoami(dev->spi_fd, &whoami) == 0) {
+            printf("[SCL3300] WHOAMI = 0x%02X\n", whoami);
+        } else {
+            fprintf(stderr, "[SCL3300] WHOAMI read failed. SPI link may be marginal.\n");
+        }
     }
 
     /* Prime pipeline for ACC_X reads */
@@ -180,7 +198,7 @@ int scl3300_read_cross_level(SCL3300 *dev, float *out_mm) {
     float acc_g = (float)raw / SCL3300_SENSITIVITY;
     if (acc_g >  1.0f) acc_g =  1.0f;
     if (acc_g < -1.0f) acc_g = -1.0f;
-    float cl = asinf(acc_g) * GAUGE_MM;
+    float cl = acc_g * GAUGE_MM;
     dev->last_cl_mm = cl;
     *out_mm = cl;
     return 0;

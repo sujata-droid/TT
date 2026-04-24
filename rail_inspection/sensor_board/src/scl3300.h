@@ -35,12 +35,12 @@
  *
  * CROSS-LEVEL FORMULA
  * -------------------
- *   Sensitivity in Mode 1 = 6000 LSB/g
+ *   Sensitivity in Mode 4 = 12000 LSB/g
  *   If tilted by angle theta from horizontal:
- *     ACC_X_raw = 6000 * sin(theta)
+ *     ACC_X_raw = sensitivity_lsb_g * sin(theta)
  *   Cross-level (mm) = gauge_mm * sin(theta)
- *                    = gauge_mm * (ACC_X_raw / 6000.0f)
- *                    = 1676 * (raw / 6000)               [for BG rail]
+ *                    = gauge_mm * (ACC_X_raw / sensitivity_lsb_g)
+ *                    = 1676 * (raw / sensitivity_lsb_g)  [for BG rail]
  *
  * TWIST FORMULA
  *   twist (mm/m) = delta_cross_level_mm / delta_chainage_m
@@ -65,7 +65,7 @@
 
 /* SPI device */
 #define SCL3300_SPI_DEV      "/dev/spidev0.0"
-#define SCL3300_SPI_SPEED_HZ  2000000   /* 2 MHz: reliable for long cables */
+#define SCL3300_SPI_SPEED_HZ   500000   /* 500 kHz: conservative for marginal wiring */
 #define SCL3300_SPI_MODE      0
 #define SCL3300_SPI_BITS      8
 
@@ -79,12 +79,17 @@
 #define CMD_READ_ERR_FLAG1  0x1C0000E3UL
 #define CMD_READ_ERR_FLAG2  0x200000C1UL
 #define CMD_READ_CMD        0x340000DFUL
+#define CMD_READ_WHOAMI     0x40000091UL
 #define CMD_CHANGE_MODE1    0xB4000091UL  /* Mode 1: +/-3g, 40 Hz, normal */
 #define CMD_CHANGE_MODE2    0xB4000102UL  /* Mode 2: +/-6g, 70 Hz         */
 #define CMD_CHANGE_MODE3    0xB4000213UL  /* Mode 3: +/-1.5g, 10 Hz       */
 #define CMD_CHANGE_MODE4    0xB4000319UL  /* Mode 4: +/-0.5g, 10 Hz       */
 #define CMD_SW_RESET        0xB4002098UL
 #define CMD_DUMMY           0x000000FFUL  /* NOP / pipeline flush         */
+
+#define SCL3300_MODE_CMD      CMD_CHANGE_MODE4
+#define SCL3300_MODE_NAME     "MODE4 +/-10deg"
+#define SCL3300_MODE_SENS_LSB_G 12000.0f
 
 /* RS field values */
 #define RS_STARTUP   0x00
@@ -93,15 +98,15 @@
 #define RS_SOFT_ERR  0x03
 
 /* Physical constants */
-#define SCL3300_SENSITIVITY   6000.0f   /* LSB per g in Mode 1          */
+#define SCL3300_SENSITIVITY   SCL3300_MODE_SENS_LSB_G
 #define GAUGE_MM              1676.0f   /* Indian BG rail gauge (mm)    */
 #define TWIST_BASELINE_M      3.0f      /* Twist computation baseline   */
 
 /* Timing (ms / us) */
-#define SCL3300_STARTUP_MS    1
-#define SCL3300_MODE_DELAY_MS 5
+#define SCL3300_STARTUP_MS    100
+#define SCL3300_MODE_DELAY_MS 100
 #define SCL3300_RESET_DELAY_MS 2
-#define SCL3300_CS_HIGH_US    10
+#define SCL3300_CS_HIGH_US    20
 
 /* Fault threshold */
 #define SCL3300_MAX_CRC_ERRORS  10

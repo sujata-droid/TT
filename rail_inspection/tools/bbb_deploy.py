@@ -18,7 +18,7 @@ REMOTE_ROOT = os.environ.get(
     "BBB_REMOTE_ROOT", "/home/debian/trolley"
 )
 REMOTE_STAGE = os.environ.get("BBB_REMOTE_STAGE", "/tmp/rail_inspection_stage")
-DEPLOY_ITEMS = ["README.md", "setup.sh", "main_ui.py", "cloud", "main_board", "pru", "sensor_board", "tools"]
+DEPLOY_ITEMS = ["README.md", "setup.sh", "main_ui.py", "railgui25.py", "run_railgui25.sh", "run_railgui25_diag.sh", "bbb_runtime", "cloud", "main_board", "pru", "sensor_board", "tools"]
 
 
 def safe_print(text, stream=sys.stdout):
