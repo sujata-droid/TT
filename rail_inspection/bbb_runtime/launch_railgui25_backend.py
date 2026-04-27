@@ -648,9 +648,17 @@ class RuntimePopupKeyboardDialog(gui_app.QDialog):
 
         screen = gui_app.QApplication.primaryScreen()
         if screen is not None:
-            self.setGeometry(screen.availableGeometry())
+            geom = screen.availableGeometry()
+            target_w = int(geom.width() * 0.96)
+            target_h = int(geom.height() * 0.88)
+            self.setGeometry(
+                geom.x() + (geom.width() - target_w) // 2,
+                geom.y() + (geom.height() - target_h) // 2,
+                target_w,
+                target_h,
+            )
         else:
-            self.resize(1280, 720)
+            self.resize(1180, 680)
 
         self._buf = current or ""
         self._result = None
@@ -658,6 +666,13 @@ class RuntimePopupKeyboardDialog(gui_app.QDialog):
         root = gui_app.QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 24)
         root.setSpacing(16)
+        inner_w = max(780, self.width() - 56)
+        key_gap = 10
+        alpha_key_w = max(68, min(96, (inner_w - (9 * key_gap) - 120) // 10))
+        alpha_key_h = max(64, min(82, int((self.height() - 260) / 5.2)))
+        special_key_w = alpha_key_w
+        space_key_w = max(220, alpha_key_w * 3)
+        action_h = max(70, alpha_key_h)
 
         hdr = gui_app.QHBoxLayout()
         title = gui_app.QLabel(field_title.upper())
@@ -686,14 +701,14 @@ class RuntimePopupKeyboardDialog(gui_app.QDialog):
         )
         for row_idx, row_str in enumerate(key_rows):
             row = gui_app.QHBoxLayout()
-            row.setSpacing(12)
+            row.setSpacing(key_gap)
             if row_idx == 2:
-                row.addSpacing(36)
+                row.addSpacing(alpha_key_w // 3)
             elif row_idx == 3:
-                row.addSpacing(72)
+                row.addSpacing((alpha_key_w * 2) // 3)
             for ch in row_str:
                 btn = gui_app.QPushButton(ch)
-                btn.setFixedSize(112, 84)
+                btn.setFixedSize(alpha_key_w, alpha_key_h)
                 btn.setStyleSheet(key_style)
                 btn.clicked.connect(lambda _, v=ch: self._char(v))
                 row.addWidget(btn)
@@ -701,18 +716,18 @@ class RuntimePopupKeyboardDialog(gui_app.QDialog):
             root.addLayout(row)
 
         special = gui_app.QHBoxLayout()
-        special.setSpacing(12)
-        special.addSpacing(100)
+        special.setSpacing(key_gap)
+        special.addSpacing(alpha_key_w)
         for ch, lbl, width in [
-            (" ", "SPACE", 360),
-            ("-", "-", 112),
-            (".", ".", 112),
-            ("/", "/", 112),
-            ("@", "@", 112),
-            ("_", "_", 112),
+            (" ", "SPACE", space_key_w),
+            ("-", "-", special_key_w),
+            (".", ".", special_key_w),
+            ("/", "/", special_key_w),
+            ("@", "@", special_key_w),
+            ("_", "_", special_key_w),
         ]:
             btn = gui_app.QPushButton(lbl)
-            btn.setFixedSize(width, 84)
+            btn.setFixedSize(width, alpha_key_h)
             btn.setStyleSheet(key_style)
             btn.clicked.connect(lambda _, v=ch: self._char(v))
             special.addWidget(btn)
@@ -720,7 +735,7 @@ class RuntimePopupKeyboardDialog(gui_app.QDialog):
         root.addLayout(special)
 
         actions = gui_app.QHBoxLayout()
-        actions.setSpacing(14)
+        actions.setSpacing(12)
         for txt, fn, style, flex in [
             ("BACK", self._backspace, "QPushButton { background:#F8FAFB; border:2px solid #D8E1EB; border-radius:14px; color:#5B6575; font-size:18pt; font-weight:700; }", 1),
             ("CLEAR", self._clear, "QPushButton { background:#F8FAFB; border:2px solid #D8E1EB; border-radius:14px; color:#5B6575; font-size:18pt; font-weight:700; }", 1),
@@ -728,7 +743,7 @@ class RuntimePopupKeyboardDialog(gui_app.QDialog):
             ("DONE", self._confirm, f"QPushButton {{ background:{gui_app.CYAN}; border:2px solid {gui_app.CYAN}; border-radius:14px; color:#FFFFFF; font-size:18pt; font-weight:700; }}", 2),
         ]:
             btn = gui_app.QPushButton(txt)
-            btn.setFixedHeight(86)
+            btn.setFixedHeight(action_h)
             btn.setStyleSheet(style)
             btn.clicked.connect(fn)
             actions.addWidget(btn, flex)
@@ -886,7 +901,7 @@ def _position_topbar_close_button(track_app):
         return
     topbar_h = track_app.topbar.height()
     btn = track_app._runtime_topbar_close_btn
-    btn.move(145, max(8, (topbar_h - btn.height()) // 2))
+    btn.move(322, max(8, (topbar_h - btn.height()) // 2))
 
 
 def _cloud_done(self, ok, message):
