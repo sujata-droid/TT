@@ -638,72 +638,255 @@ def patched_data_entry_init(original_init):
     return wrapper
 
 
-def patch_touch_keyboard_scaling() -> None:
-    scale = float(os.environ.get("RAIL_TOUCH_SCALE", "1.6"))
-    if scale <= 1.0:
-        return
+class RuntimePopupKeyboardDialog(gui_app.QDialog):
+    def __init__(self, field_title="Enter Value", current="", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(field_title)
+        self.setModal(True)
+        self.setWindowFlags(gui_app.Qt.Dialog | gui_app.Qt.FramelessWindowHint)
+        self.setStyleSheet("QDialog { background:#FFFFFF; border:2px solid #1565C0; border-radius:18px; }")
 
-    popup_init = gui_app.PopupKeyboardDialog.__init__
-    numpad_init = gui_app.NumpadDialog.__init__
-
-    def popup_wrapper(self, *args, **kwargs):
-        popup_init(self, *args, **kwargs)
         screen = gui_app.QApplication.primaryScreen()
         if screen is not None:
-            geom = screen.availableGeometry()
-            self.setGeometry(geom)
+            self.setGeometry(screen.availableGeometry())
         else:
-            self.resize(int(self.width() * scale), int(self.height() * scale))
-        self.setStyleSheet(
-            self.styleSheet()
-            + " QLabel{font-size:18pt;} QPushButton{font-size:18pt; min-height:78px; min-width:104px;}"
-        )
-        for btn in self.findChildren(gui_app.QPushButton):
-            bw, bh = max(1, btn.width()), max(1, btn.height())
-            nw = max(104, int(bw * 1.7))
-            nh = max(78, int(bh * 1.7))
-            btn.setFixedSize(nw, nh)
-            f = btn.font()
-            f.setPointSize(max(16, f.pointSize() + 4))
-            btn.setFont(f)
-        for lbl in self.findChildren(gui_app.QLabel):
-            f = lbl.font()
-            f.setPointSize(max(14, f.pointSize() + 4))
-            lbl.setFont(f)
+            self.resize(1280, 720)
 
-    def numpad_wrapper(self, *args, **kwargs):
-        numpad_init(self, *args, **kwargs)
+        self._buf = current or ""
+        self._result = None
+
+        root = gui_app.QVBoxLayout(self)
+        root.setContentsMargins(28, 24, 28, 24)
+        root.setSpacing(16)
+
+        hdr = gui_app.QHBoxLayout()
+        title = gui_app.QLabel(field_title.upper())
+        title.setStyleSheet(
+            f"color:{gui_app.CYAN}; font-size:20pt; font-weight:bold; background:transparent;"
+        )
+        self._disp = gui_app.QLabel(self._buf or "-")
+        self._disp.setAlignment(gui_app.Qt.AlignRight | gui_app.Qt.AlignVCenter)
+        self._disp.setMinimumHeight(84)
+        self._disp.setStyleSheet(
+            f"background:#F8FAFB; border:2px solid {gui_app.CYAN}; border-radius:12px;"
+            f" color:{gui_app.CYAN}; font-size:22pt; font-family:'Courier New';"
+            f" padding-right:16px; font-weight:bold;"
+        )
+        hdr.addWidget(title, 0)
+        hdr.addSpacing(20)
+        hdr.addWidget(self._disp, 1)
+        root.addLayout(hdr)
+
+        key_rows = ["1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"]
+        key_style = (
+            "QPushButton { background:#F8FAFB; border:2px solid #D8E1EB;"
+            " border-radius:14px; color:#334155; font-size:20pt; font-weight:700; }"
+            "QPushButton:hover { background:#FFFFFF; border-color:#1565C0; }"
+            "QPushButton:pressed { background:#EAF3FF; }"
+        )
+        for row_idx, row_str in enumerate(key_rows):
+            row = gui_app.QHBoxLayout()
+            row.setSpacing(12)
+            if row_idx == 2:
+                row.addSpacing(36)
+            elif row_idx == 3:
+                row.addSpacing(72)
+            for ch in row_str:
+                btn = gui_app.QPushButton(ch)
+                btn.setFixedSize(112, 84)
+                btn.setStyleSheet(key_style)
+                btn.clicked.connect(lambda _, v=ch: self._char(v))
+                row.addWidget(btn)
+            row.addStretch()
+            root.addLayout(row)
+
+        special = gui_app.QHBoxLayout()
+        special.setSpacing(12)
+        special.addSpacing(100)
+        for ch, lbl, width in [
+            (" ", "SPACE", 360),
+            ("-", "-", 112),
+            (".", ".", 112),
+            ("/", "/", 112),
+            ("@", "@", 112),
+            ("_", "_", 112),
+        ]:
+            btn = gui_app.QPushButton(lbl)
+            btn.setFixedSize(width, 84)
+            btn.setStyleSheet(key_style)
+            btn.clicked.connect(lambda _, v=ch: self._char(v))
+            special.addWidget(btn)
+        special.addStretch()
+        root.addLayout(special)
+
+        actions = gui_app.QHBoxLayout()
+        actions.setSpacing(14)
+        for txt, fn, style, flex in [
+            ("BACK", self._backspace, "QPushButton { background:#F8FAFB; border:2px solid #D8E1EB; border-radius:14px; color:#5B6575; font-size:18pt; font-weight:700; }", 1),
+            ("CLEAR", self._clear, "QPushButton { background:#F8FAFB; border:2px solid #D8E1EB; border-radius:14px; color:#5B6575; font-size:18pt; font-weight:700; }", 1),
+            ("CANCEL", self.reject, f"QPushButton {{ background:#FFEBEE; border:2px solid {gui_app.RED}; border-radius:14px; color:{gui_app.RED}; font-size:18pt; font-weight:700; }}", 1),
+            ("DONE", self._confirm, f"QPushButton {{ background:{gui_app.CYAN}; border:2px solid {gui_app.CYAN}; border-radius:14px; color:#FFFFFF; font-size:18pt; font-weight:700; }}", 2),
+        ]:
+            btn = gui_app.QPushButton(txt)
+            btn.setFixedHeight(86)
+            btn.setStyleSheet(style)
+            btn.clicked.connect(fn)
+            actions.addWidget(btn, flex)
+        root.addLayout(actions)
+
+    def _char(self, ch):
+        self._buf += ch
+        self._disp.setText(self._buf or "-")
+
+    def _backspace(self):
+        self._buf = self._buf[:-1]
+        self._disp.setText(self._buf or "-")
+
+    def _clear(self):
+        self._buf = ""
+        self._disp.setText("-")
+
+    def _confirm(self):
+        self._result = self._buf
+        self.accept()
+
+    def get_value(self):
+        return self._result
+
+
+class RuntimeNumpadDialog(gui_app.QDialog):
+    def __init__(self, title, current_val="0", decimals=1, min_val=None, max_val=None, unit="", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setStyleSheet(gui_app.SS + "QDialog{background:#0e0e0e;}")
+
         screen = gui_app.QApplication.primaryScreen()
         if screen is not None:
             geom = screen.availableGeometry()
-            target_w = int(geom.width() * 0.95)
-            target_h = int(geom.height() * 0.90)
-            self.resize(target_w, target_h)
+            self.resize(int(geom.width() * 0.94), int(geom.height() * 0.88))
             self.move(
                 geom.x() + (geom.width() - self.width()) // 2,
                 geom.y() + (geom.height() - self.height()) // 2,
             )
         else:
-            self.resize(int(self.width() * scale), int(self.height() * scale))
-        self.setStyleSheet(
-            self.styleSheet()
-            + " QLabel{font-size:18pt;} QPushButton{font-size:18pt; min-height:74px; min-width:96px;}"
-        )
-        for btn in self.findChildren(gui_app.QPushButton):
-            bw, bh = max(1, btn.width()), max(1, btn.height())
-            nw = max(96, int(bw * 1.5))
-            nh = max(74, int(bh * 1.5))
-            btn.setFixedSize(nw, nh)
-            f = btn.font()
-            f.setPointSize(max(15, f.pointSize() + 4))
-            btn.setFont(f)
-        for lbl in self.findChildren(gui_app.QLabel):
-            f = lbl.font()
-            f.setPointSize(max(14, f.pointSize() + 3))
-            lbl.setFont(f)
+            self.resize(900, 760)
 
-    gui_app.PopupKeyboardDialog.__init__ = popup_wrapper
-    gui_app.NumpadDialog.__init__ = numpad_wrapper
+        self._dec = decimals
+        self._min = min_val
+        self._max = max_val
+        self._unit = unit
+        self._buf = str(current_val).strip()
+        self._result = None
+
+        root = gui_app.QVBoxLayout(self)
+        root.setContentsMargins(22, 20, 22, 20)
+        root.setSpacing(14)
+
+        t = gui_app.QLabel(title.upper())
+        t.setAlignment(gui_app.Qt.AlignCenter)
+        t.setStyleSheet(f"color:{gui_app.CYAN}; font-size:18pt; font-weight:bold;")
+        root.addWidget(t)
+
+        self._disp = gui_app.QLabel()
+        self._disp.setAlignment(gui_app.Qt.AlignRight | gui_app.Qt.AlignVCenter)
+        self._disp.setFixedHeight(96)
+        self._disp.setStyleSheet(
+            f"background:#060606; border:2px solid {gui_app.CYAN}88; border-radius:12px;"
+            f" color:{gui_app.CYAN}; font-size:30pt; font-family:'Courier New';"
+            f" padding-right:18px; font-weight:bold;"
+        )
+        root.addWidget(self._disp)
+
+        grid = gui_app.QGridLayout()
+        grid.setSpacing(14)
+        rows = [("7", "8", "9"), ("4", "5", "6"), ("1", "2", "3"), (".", "0", "DEL")]
+        for r, trio in enumerate(rows):
+            for c, lbl in enumerate(trio):
+                name = "NO" if lbl == "." else "ND" if lbl == "DEL" else "NK"
+                btn = gui_app._btn(lbl, name, 96, 160)
+                if lbl == "DEL":
+                    btn.clicked.connect(self._del)
+                elif lbl == ".":
+                    btn.clicked.connect(lambda _, ch=".": self._press(ch))
+                    btn.setEnabled(decimals > 0)
+                else:
+                    btn.clicked.connect(lambda _, ch=lbl: self._press(ch))
+                grid.addWidget(btn, r, c)
+
+        pm = gui_app._btn("+/-", "NO", 96, 160)
+        pm.clicked.connect(self._sign)
+        clr = gui_app._btn("CLR", "NO", 96, 160)
+        clr.clicked.connect(self._clear)
+        ok = gui_app._btn("OK", "NOK", 96, 160)
+        ok.clicked.connect(self._confirm)
+        grid.addWidget(pm, 4, 0)
+        grid.addWidget(clr, 4, 1)
+        grid.addWidget(ok, 4, 2)
+        root.addLayout(grid)
+
+        cnc = gui_app._btn("CANCEL", "BR", 72)
+        cnc.clicked.connect(self.reject)
+        root.addWidget(cnc)
+        self._refresh()
+
+    def _press(self, ch):
+        if ch == "." and "." in self._buf:
+            return
+        if "." in self._buf and ch != ".":
+            after_dot = self._buf.split(".")[1]
+            if len(after_dot) >= self._dec:
+                return
+        stripped = self._buf.lstrip("-")
+        if stripped in ("0", "") and ch != ".":
+            self._buf = ("-" if self._buf.startswith("-") else "") + ch
+        else:
+            self._buf += ch
+        self._refresh()
+
+    def _del(self):
+        self._buf = self._buf[:-1] if len(self._buf) > 1 else "0"
+        if self._buf == "-":
+            self._buf = "0"
+        self._refresh()
+
+    def _clear(self):
+        self._buf = "0"
+        self._refresh()
+
+    def _sign(self):
+        if self._buf.startswith("-"):
+            self._buf = self._buf[1:]
+        elif self._buf not in ("0", ""):
+            self._buf = "-" + self._buf
+        self._refresh()
+
+    def _refresh(self):
+        suf = f"  {self._unit}" if self._unit else ""
+        self._disp.setText((self._buf or "0") + suf)
+
+    def _confirm(self):
+        try:
+            v = float(self._buf)
+        except ValueError:
+            v = 0.0
+        if self._min is not None:
+            v = max(float(self._min), v)
+        if self._max is not None:
+            v = min(float(self._max), v)
+        self._result = v
+        self.accept()
+
+    def get_value(self):
+        return self._result
+
+
+def _position_topbar_close_button(track_app):
+    if not hasattr(track_app, "_runtime_topbar_close_btn") or not hasattr(track_app, "topbar"):
+        return
+    topbar_h = track_app.topbar.height()
+    btn = track_app._runtime_topbar_close_btn
+    btn.move(145, max(8, (topbar_h - btn.height()) // 2))
 
 
 def _cloud_done(self, ok, message):
@@ -765,6 +948,16 @@ def runtime_key_press(self, event):
     gui_app.QWidget.keyPressEvent(self, event)
 
 
+def runtime_resize_event(self, event):
+    _position_topbar_close_button(self)
+    gui_app.QWidget.resizeEvent(self, event)
+
+
+def runtime_show_event(self, event):
+    _position_topbar_close_button(self)
+    gui_app.QWidget.showEvent(self, event)
+
+
 def patched_trackapp_init(original_init):
     def wrapper(self):
         original_init(self)
@@ -784,18 +977,19 @@ def patched_trackapp_init(original_init):
         if hasattr(self, "topbar"):
             close_tb = gui_app.QPushButton("X", self.topbar)
             close_tb.setObjectName("BX")
-            close_tb.setFixedSize(44, 34)
+            close_tb.setFixedSize(52, 38)
             close_tb.clicked.connect(self.close)
-            close_tb.move(168, 18)
             close_tb.raise_()
             self._runtime_topbar_close_btn = close_tb
+            _position_topbar_close_button(self)
     return wrapper
 
 
 def apply_runtime_patches() -> None:
     sanitize_stylesheet()
     patch_qt_stylesheet_calls()
-    patch_touch_keyboard_scaling()
+    gui_app.PopupKeyboardDialog = RuntimePopupKeyboardDialog
+    gui_app.NumpadDialog = RuntimeNumpadDialog
     gui_app.InclinCal = RuntimeInclinCal
     gui_app._SENSORS = [
         ("adc", "Potentiometer", gui_app.CYAN, gui_app.ADCCal),
@@ -814,6 +1008,8 @@ def apply_runtime_patches() -> None:
     gui_app.TrackApp._on_data = optimized_on_data
     gui_app.TrackApp._on_toggle = optimized_on_toggle
     gui_app.TrackApp.keyPressEvent = runtime_key_press
+    gui_app.TrackApp.resizeEvent = runtime_resize_event
+    gui_app.TrackApp.showEvent = runtime_show_event
     gui_app.TrackApp.closeEvent = runtime_close_event
     gui_app.TrackApp.__init__ = patched_trackapp_init(gui_app.TrackApp.__init__)
 
