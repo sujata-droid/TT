@@ -931,7 +931,7 @@ def _position_topbar_close_button(track_app):
         return
     topbar_h = track_app.topbar.height()
     btn = track_app._runtime_topbar_close_btn
-    btn.move(286, max(8, (topbar_h - btn.height()) // 2))
+    btn.move(150, max(8, (topbar_h - btn.height()) // 2))
 
 
 def _cloud_done(self, ok, message):
