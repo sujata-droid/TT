@@ -44,6 +44,7 @@ CSV_FIELDS = [
     "Absolute Tilt",
     "Cumulative Tilt",
 ]
+REFERENCE_TYPES = ["Station", "Curve", "Level crossing", "Hectometer Post"]
 
 
 def _normalize_cloud_url(url: str) -> str:
@@ -264,10 +265,13 @@ class BufferedCSVLogger(gui_app.CSVLogger):
             return
         cross = d.get("cross", 0)
         twist = d.get("twist", 0)
+        ref_type = str(self._ref_type or "").strip()
+        if ref_type not in REFERENCE_TYPES:
+            ref_type = "Station"
         row = {
             "Sample No": self.count + 1,
             "Date & Time": gui_app.datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
-            "Reference Type": self._ref_type or "",
+            "Reference Type": ref_type,
             "Reference Point": self._ref_value or "",
             "Lattitude": f"{float(d.get('lat', 0.0)):.5f}",
             "Longitude": f"{float(d.get('lon', 0.0)):.5f}",
@@ -499,9 +503,97 @@ def optimized_on_data(self, d):
 
     if self.sensor.active:
         dist = d.get("dist", 0)
-        self.logger._ref_type = "KM"
-        self.logger._ref_value = f"{round(dist, 1)} km"
+        self.logger._ref_type = getattr(self, "_runtime_ref_type", "Station")
+        self.logger._ref_value = getattr(self, "_runtime_ref_point", f"{round(dist, 1)}")
         self.logger.write(d)
+
+
+def _save_current_data_row(self):
+    latest = getattr(self, "_latest_sensor_data", None)
+    if not latest:
+        self.topbar.push_error("No live sensor data to save")
+        return
+    if not getattr(self.logger, "_w", None):
+        self.logger.start(self.cfg["csv_dir"], self.cfg.get("hl_sec", 30))
+    self.logger._ref_type = getattr(self, "_runtime_ref_type", "Station")
+    self.logger._ref_value = getattr(self, "_runtime_ref_point", "")
+    self.logger.write(latest)
+    self.dash.set_session(self.logger.count, self.sensor.active, self.logger.path or "")
+    self.topbar.push_error("Data entry saved")
+
+
+def _install_entry_controls(self):
+    root = self.entry.layout()
+    if root is None:
+        return
+    bottom_item = root.itemAt(root.count() - 1)
+    if not bottom_item or not bottom_item.widget():
+        return
+    bottom_w = bottom_item.widget()
+    bottom_l = bottom_w.layout()
+    if bottom_l is None:
+        return
+
+    self._runtime_ref_type = getattr(self, "_runtime_ref_type", "Station")
+    self._runtime_ref_point = getattr(self, "_runtime_ref_point", "")
+
+    ref_combo = gui_app.QComboBox(bottom_w)
+    ref_combo.addItems(REFERENCE_TYPES)
+    ref_combo.setCurrentText(self._runtime_ref_type)
+    ref_combo.setFixedHeight(40)
+    ref_combo.setMinimumWidth(210)
+    ref_combo.setStyleSheet(
+        "QComboBox{background:#FFFFFF; border:2px solid #1565C0; border-radius:8px;"
+        " color:#1565C0; font-size:12pt; font-weight:600; padding:4px 10px;}"
+        "QComboBox QAbstractItemView{font-size:12pt;}"
+    )
+
+    ref_point = gui_app.QLineEdit(bottom_w)
+    ref_point.setPlaceholderText("Reference Point")
+    ref_point.setText(self._runtime_ref_point)
+    ref_point.setFixedHeight(40)
+    ref_point.setMinimumWidth(220)
+    ref_point.setStyleSheet(
+        "QLineEdit{background:#FFFFFF; border:2px solid #C8D0DA; border-radius:8px;"
+        " color:#1A2332; font-size:12pt; padding:4px 10px;}"
+    )
+
+    save_btn = gui_app._btn("SAVE DATA", "BA", 40, 160)
+
+    def _update_ref_type(value):
+        self._runtime_ref_type = value
+
+    def _update_ref_point():
+        self._runtime_ref_point = ref_point.text().strip()
+
+    ref_combo.currentTextChanged.connect(_update_ref_type)
+    ref_point.editingFinished.connect(_update_ref_point)
+    save_btn.clicked.connect(lambda: (_update_ref_point(), _save_current_data_row(self)))
+
+    bottom_l.insertWidget(1, ref_combo)
+    bottom_l.insertWidget(2, ref_point)
+    bottom_l.insertWidget(3, save_btn)
+
+
+def _patch_numpad_scaling():
+    original_init = gui_app.NumpadDialog.__init__
+
+    def wrapped(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self.setFixedSize(500, 620)
+        for btn in self.findChildren(gui_app.QPushButton):
+            btn.setMinimumHeight(max(btn.minimumHeight(), 64))
+            f = btn.font()
+            if f.pointSize() < 14:
+                f.setPointSize(14)
+                btn.setFont(f)
+        for lab in self.findChildren(gui_app.QLabel):
+            f = lab.font()
+            if f.pointSize() < 13:
+                f.setPointSize(13)
+                lab.setFont(f)
+
+    gui_app.NumpadDialog.__init__ = wrapped
 
 
 def optimized_metric_refresh(self, val):
@@ -627,6 +719,7 @@ def patched_trackapp_init(original_init):
         self._ui_refresh_timer.setInterval(UI_REFRESH_MS)
         self._ui_refresh_timer.timeout.connect(lambda: _refresh_latest_data(self))
         self._ui_refresh_timer.start()
+        _install_entry_controls(self)
         close_btn = gui_app.QPushButton("X", self)
         close_btn.setObjectName("BX")
         close_btn.setGeometry(8, 8, 42, 30)
@@ -639,6 +732,7 @@ def patched_trackapp_init(original_init):
 def apply_runtime_patches() -> None:
     sanitize_stylesheet()
     patch_qt_stylesheet_calls()
+    _patch_numpad_scaling()
     gui_app.InclinCal = RuntimeInclinCal
     gui_app._SENSORS = [
         ("adc", "Potentiometer", gui_app.CYAN, gui_app.ADCCal),
