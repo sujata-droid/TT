@@ -6,6 +6,7 @@ import functools
 import json
 import os
 import re
+import socket
 import sys
 import time
 import urllib.error
@@ -25,8 +26,132 @@ from backend_bridge import SharedMemoryBridge, format_diag
 
 CSV_FLUSH_ROWS = 50
 UI_REFRESH_MS = 100
-CLOUD_URL = os.environ.get("RAIL_CLOUD_URL", "")
+DEFAULT_CLOUD_ROOT = "https://thread-qm2o.onrender.com"
 CLOUD_RETRIES = 3
+LOG_DIR = RUNTIME_DIR / "logs"
+STATUS_FILE = LOG_DIR / "cloud_status.json"
+QUEUE_FILE = LOG_DIR / "cloud_queue.json"
+CSV_FIELDS = [
+    "Sample No",
+    "Date & Time",
+    "Reference Type",
+    "Reference Point",
+    "Lattitude",
+    "Longitude",
+    "Distance",
+    "Gauge",
+    "Crossover",
+    "Absolute Tilt",
+    "Cumulative Tilt",
+]
+
+
+def _normalize_cloud_url(url: str) -> str:
+    value = (url or "").strip()
+    if not value:
+        value = DEFAULT_CLOUD_ROOT
+    value = value.rstrip("/")
+    if value.endswith("/api/survey"):
+        return value
+    return value + "/api/survey"
+
+
+def _cloud_root(url: str) -> str:
+    api_url = _normalize_cloud_url(url)
+    if api_url.endswith("/api/survey"):
+        return api_url[:-11] or "/"
+    return api_url
+
+
+CLOUD_URL = _normalize_cloud_url(os.environ.get("RAIL_CLOUD_URL", DEFAULT_CLOUD_ROOT))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _read_queue() -> list:
+    if not QUEUE_FILE.exists():
+        return []
+    try:
+        data = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [str(x) for x in data if isinstance(x, str)]
+    except Exception:
+        pass
+    return []
+
+
+def _write_queue(items: list) -> None:
+    QUEUE_FILE.write_text(json.dumps(items, indent=2), encoding="utf-8")
+
+
+def _queue_csv(path: str) -> None:
+    if not path:
+        return
+    items = _read_queue()
+    if path not in items:
+        items.append(path)
+        _write_queue(items)
+
+
+def _write_cloud_status(ok: bool, message: str, csv_path: str = "", queued: bool = False) -> None:
+    payload = {
+        "timestamp": int(time.time()),
+        "ok": bool(ok),
+        "queued": bool(queued),
+        "message": message,
+        "csv_path": csv_path or "",
+        "cloud_url": CLOUD_URL,
+    }
+    STATUS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"[Cloud] {message}")
+
+
+def _build_payload(csv_path: str):
+    with open(csv_path, newline="") as handle:
+        rows = list(gui_app.csv.DictReader(handle))
+    body = json.dumps({
+        "filename": os.path.basename(csv_path),
+        "data": rows,
+    }).encode("utf-8")
+    return body, len(rows)
+
+
+def _post_payload(body: bytes, timeout: int = 20):
+    req = urllib.request.Request(
+        CLOUD_URL,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "RailInspection-BBB/1.0",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        response.read()
+
+
+def _format_cloud_error(exc: Exception) -> str:
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, socket.gaierror) and getattr(reason, "errno", None) == -3:
+            return "Cloud DNS error (errno -3): host name resolution failed"
+    return str(exc)
+
+
+def _flush_cloud_queue() -> None:
+    queue = _read_queue()
+    if not queue:
+        return
+    remaining = []
+    for path in queue:
+        if not os.path.exists(path):
+            continue
+        try:
+            body, rows = _build_payload(path)
+            _post_payload(body, timeout=20)
+            _write_cloud_status(True, f"Uploaded queued file ({rows} rows): {os.path.basename(path)}", path)
+        except Exception:
+            remaining.append(path)
+    _write_queue(remaining)
 
 
 @functools.lru_cache(maxsize=512)
@@ -120,24 +245,37 @@ def safe_apply_screen_geometry(self) -> None:
 
 class BufferedCSVLogger(gui_app.CSVLogger):
     def start(self, directory, hl_sec=30):
-        super().start(directory, hl_sec)
+        os.makedirs(directory, exist_ok=True)
+        safe_ts = gui_app.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        filename = f"BLE_{safe_ts}.csv"
+        self.path = os.path.join(directory, filename)
+        self._f = open(self.path, "w", newline="", encoding="utf-8")
+        self._w = gui_app.csv.DictWriter(self._f, fieldnames=CSV_FIELDS)
+        self._w.writeheader()
+        self._rows = []
+        self._hl_s = hl_sec
+        self._next_hl = time.time() + hl_sec
+        self._mark = []
+        self.count = 0
         self._unflushed = 0
 
     def write(self, d):
         if not self._w:
             return
         cross = d.get("cross", 0)
+        twist = d.get("twist", 0)
         row = {
-            "epoch_time": int(time.time()),
-            "reference_type": self._ref_type,
-            "reference_value": self._ref_value,
-            "latitude": d.get("lat", 0),
-            "longitude": d.get("lon", 0),
-            "cross_level": cross,
-            "chainage": d.get("dist", 0),
-            "twist": d.get("twist", 0),
-            "tilt": cross,
-            "tilt_cord_length": d.get("dist", 0),
+            "Sample No": self.count + 1,
+            "Date & Time": gui_app.datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
+            "Reference Type": self._ref_type or "",
+            "Reference Point": self._ref_value or "",
+            "Lattitude": f"{float(d.get('lat', 0.0)):.5f}",
+            "Longitude": f"{float(d.get('lon', 0.0)):.5f}",
+            "Distance": f"{float(d.get('dist', 0.0)):.2f}",
+            "Gauge": f"{float(d.get('gauge', 0.0)):.0f}",
+            "Crossover": f"{float(cross):.0f}",
+            "Absolute Tilt": f"{float(cross):.0f}",
+            "Cumulative Tilt": f"{float(twist):.0f}",
         }
         self._rows.append((time.time(), row))
         self._w.writerow(row)
@@ -170,35 +308,26 @@ class CloudPushThread(gui_app.QThread):
             self.done.emit(False, "No CSV file to upload")
             return
         try:
-            with open(self.csv_path, newline="") as handle:
-                rows = list(gui_app.csv.DictReader(handle))
+            body, rows_count = _build_payload(self.csv_path)
+            _flush_cloud_queue()
         except Exception as exc:
             self.done.emit(False, f"CSV read failed: {exc}")
             return
 
-        payload = json.dumps({
-            "filename": os.path.basename(self.csv_path),
-            "data": rows,
-        }).encode("utf-8")
-
         for attempt in range(CLOUD_RETRIES):
             try:
-                request = urllib.request.Request(
-                    CLOUD_URL,
-                    data=payload,
-                    method="POST",
-                    headers={
-                        "Content-Type": "application/json",
-                        "User-Agent": "RailInspection-BBB/1.0",
-                    },
-                )
-                with urllib.request.urlopen(request, timeout=20) as response:
-                    response.read()
-                self.done.emit(True, f"Uploaded {len(rows)} rows")
+                _post_payload(body, timeout=20)
+                msg = f"Uploaded {rows_count} rows"
+                _write_cloud_status(True, msg, self.csv_path)
+                self.done.emit(True, msg)
                 return
             except Exception as exc:
                 if attempt == CLOUD_RETRIES - 1:
-                    self.done.emit(False, f"Cloud upload failed: {exc}")
+                    reason = _format_cloud_error(exc)
+                    _queue_csv(self.csv_path)
+                    queued_msg = f"Cloud upload failed: {reason}. Queued for retry."
+                    _write_cloud_status(False, queued_msg, self.csv_path, queued=True)
+                    self.done.emit(False, queued_msg)
                     return
                 time.sleep(2 ** attempt)
 
@@ -221,7 +350,7 @@ class RuntimeNetThread(gui_app.NetThread):
             return True
         try:
             request = urllib.request.Request(
-                CLOUD_URL.replace("/api/survey", "/"),
+                _cloud_root(CLOUD_URL) + "/",
                 method="GET",
                 headers={"User-Agent": "RailInspection-BBB/1.0"},
             )
@@ -431,12 +560,14 @@ def _cloud_done(self, ok, message):
         self.topbar.push_error(message)
 
 
-def _push_csv_to_cloud(self, csv_path):
+def _push_csv_to_cloud(self, csv_path, wait=False):
     if not csv_path or not CLOUD_URL:
         return
     self._cloud_thread = CloudPushThread(csv_path, self)
     self._cloud_thread.done.connect(lambda ok, msg: _cloud_done(self, ok, msg))
     self._cloud_thread.start()
+    if wait:
+        self._cloud_thread.wait(45000)
 
 
 def optimized_on_toggle(self, running):
@@ -450,7 +581,7 @@ def optimized_on_toggle(self, running):
     else:
         saved_path = self.logger.stop()
         self.dash.set_session(self.logger.count, False, saved_path or "")
-        _push_csv_to_cloud(self, saved_path)
+        _push_csv_to_cloud(self, saved_path, wait=False)
 
 
 def runtime_close_event(self, event):
@@ -458,7 +589,7 @@ def runtime_close_event(self, event):
         self.sensor.active = False
         if hasattr(self, "logger"):
             saved_path = self.logger.stop()
-            _push_csv_to_cloud(self, saved_path)
+            _push_csv_to_cloud(self, saved_path, wait=True)
         if hasattr(self, "sensor") and self.sensor.isRunning():
             self.sensor.stop()
             self.sensor.wait(3000)
@@ -496,6 +627,12 @@ def patched_trackapp_init(original_init):
         self._ui_refresh_timer.setInterval(UI_REFRESH_MS)
         self._ui_refresh_timer.timeout.connect(lambda: _refresh_latest_data(self))
         self._ui_refresh_timer.start()
+        close_btn = gui_app.QPushButton("X", self)
+        close_btn.setObjectName("BX")
+        close_btn.setGeometry(8, 8, 42, 30)
+        close_btn.clicked.connect(self.close)
+        close_btn.raise_()
+        self._runtime_close_btn = close_btn
     return wrapper
 
 

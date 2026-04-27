@@ -18,7 +18,20 @@ REMOTE_ROOT = os.environ.get(
     "BBB_REMOTE_ROOT", "/home/debian/trolley"
 )
 REMOTE_STAGE = os.environ.get("BBB_REMOTE_STAGE", "/tmp/rail_inspection_stage")
-DEPLOY_ITEMS = ["README.md", "setup.sh", "main_ui.py", "railgui25.py", "run_railgui25.sh", "run_railgui25_diag.sh", "bbb_runtime", "cloud", "main_board", "pru", "sensor_board", "tools"]
+DEPLOY_ITEMS = [
+    "setup.sh",
+    "configure_autologin_startx.sh",
+    "push_latest_csv.sh",
+    "railgui25.py",
+    "run_railgui25.sh",
+    "run_railgui25_diag.sh",
+    "setup_encoder_pru.sh",
+    "start_gui_session.sh",
+    "bbb_runtime",
+    "pru",
+    "sensor_board",
+    "tools/encoder_console_test.py",
+]
 
 
 def safe_print(text, stream=sys.stdout):
@@ -161,17 +174,30 @@ def deploy(args):
     sudo_run(client, f"mkdir -p {shell_quote(posixpath.dirname(REMOTE_ROOT))}", timeout=30)
     sudo_run(client, f"cp -a {shell_quote(REMOTE_STAGE)} {shell_quote(REMOTE_ROOT)}", timeout=60)
     sudo_run(client, f"chown -R {USER}:{USER} {shell_quote(REMOTE_ROOT)}", timeout=60)
+    run(client, f"find {shell_quote(REMOTE_ROOT)} -type f -name '*.sh' -exec sed -i 's/\\r$//' {{}} +", timeout=60)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/setup.sh')}", timeout=30)
-    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/main_ui.py')}", timeout=30)
-    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/main_board/main.py')}", timeout=30)
+    run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/run_railgui25.sh')}", timeout=30)
+    run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/run_railgui25_diag.sh')}", timeout=30)
+    run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/push_latest_csv.sh')}", timeout=30)
+    run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/bbb_runtime/run_railgui25_backend.sh')}", timeout=30)
+    run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/configure_autologin_startx.sh')}", timeout=30)
+    run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/start_gui_session.sh')}", timeout=30)
+    run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/setup_encoder_pru.sh')}", timeout=30)
+    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/bbb_runtime/backend_bridge.py')}", timeout=30)
+    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/bbb_runtime/launch_railgui25_backend.py')}", timeout=30)
+    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/railgui25.py')}", timeout=30)
+    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/encoder_console_test.py')}", timeout=30)
     run(client, f"cd {shell_quote(REMOTE_ROOT + '/sensor_board')} && make clean && make", timeout=120)
+    run(client, f"find {shell_quote(REMOTE_ROOT)} -type d -name __pycache__ -prune -exec rm -rf {{}} +", timeout=60)
     client.close()
 
 
 def check(args):
     client = connect()
     commands = [
-        f"python3 -m py_compile {REMOTE_ROOT}/main_board/main.py",
+        f"python3 -m py_compile {REMOTE_ROOT}/railgui25.py",
+        f"python3 -m py_compile {REMOTE_ROOT}/bbb_runtime/launch_railgui25_backend.py",
+        f"python3 -m py_compile {REMOTE_ROOT}/tools/encoder_console_test.py",
         f"cd {REMOTE_ROOT}/sensor_board && make",
         f"test -x {REMOTE_ROOT}/sensor_board/sensor_service && echo sensor_service_ok",
         "python3 - <<'PY'\nimport PyQt5\nprint('pyqt5_ok')\nPY",
@@ -225,8 +251,9 @@ rm -rf /tmp/rail_csv_test
 python3 - <<'PY'
 import sys
 sys.path.insert(0, '.')
-import main_ui
-logger = main_ui.CSVLogger()
+sys.path.insert(0, 'bbb_runtime')
+import railgui25 as app
+logger = app.CSVLogger()
 logger.set_reference('TEST', 'DIAG')
 logger.start('/tmp/rail_csv_test')
 for i in range(5):
@@ -246,6 +273,16 @@ def configure_lte(args):
     sudo_run(
         client,
         f"cd {shell_quote(REMOTE_ROOT)} && APN={shell_quote(args.apn)} sh tools/configure_airtel_lte.sh",
+        timeout=120,
+    )
+    client.close()
+
+
+def configure_console(args):
+    client = connect()
+    sudo_run(
+        client,
+        f"cd {shell_quote(REMOTE_ROOT)} && bash configure_autologin_startx.sh {shell_quote(args.user)} {shell_quote(args.mode)}",
         timeout=120,
     )
     client.close()
@@ -274,6 +311,10 @@ def main():
     lte = sub.add_parser("configure-lte")
     lte.add_argument("--apn", default="airtelgprs.com")
     lte.set_defaults(func=configure_lte)
+    console = sub.add_parser("configure-console")
+    console.add_argument("--user", default=USER)
+    console.add_argument("--mode", choices=["console", "app"], default="console")
+    console.set_defaults(func=configure_console)
     remote = sub.add_parser("remote")
     remote.add_argument("--sudo", action="store_true")
     remote.add_argument("--timeout", type=int, default=120)

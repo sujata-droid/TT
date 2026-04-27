@@ -6,6 +6,8 @@ LOG_DIR="$ROOT_DIR/bbb_runtime/logs"
 SENSOR_LOG="$LOG_DIR/sensor_service.log"
 DIAG_JSON="$LOG_DIR/backend_diag.json"
 MODE="${1:-all}"
+export RAIL_CLOUD_URL="${RAIL_CLOUD_URL:-https://thread-qm2o.onrender.com}"
+export PYTHONDONTWRITEBYTECODE=1
 
 mkdir -p "$LOG_DIR"
 
@@ -26,6 +28,7 @@ trap cleanup EXIT
 echo "== RailGUI25 backend runtime =="
 echo "root=$ROOT_DIR"
 echo "mode=$MODE"
+echo "cloud=$RAIL_CLOUD_URL"
 echo
 
 echo "[1/5] Verifying files"
