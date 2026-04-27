@@ -36,6 +36,15 @@ CSV_FIELDS = [
     "Date & Time",
     "Reference Type",
     "Reference Point",
+    "Station Code",
+    "Chainage",
+    "Loop/Line Siding",
+    "Turn-out No",
+    "Curve No",
+    "Level Crossing No",
+    "Hectometer Post",
+    "Name",
+    "Designation",
     "Lattitude",
     "Longitude",
     "Distance",
@@ -264,6 +273,7 @@ class BufferedCSVLogger(gui_app.CSVLogger):
         self._mark = []
         self.count = 0
         self._unflushed = 0
+        self._station_values = {}
 
     def write(self, d):
         if not self._w:
@@ -275,6 +285,15 @@ class BufferedCSVLogger(gui_app.CSVLogger):
             "Date & Time": gui_app.datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
             "Reference Type": self._ref_type or "",
             "Reference Point": self._ref_value or "",
+            "Station Code": str(self._station_values.get("Station Code", "")),
+            "Chainage": str(self._station_values.get("Chainage", "")),
+            "Loop/Line Siding": str(self._station_values.get("Loop/Line Siding", "")),
+            "Turn-out No": str(self._station_values.get("Turn-out No", "")),
+            "Curve No": str(self._station_values.get("Curve No", "")),
+            "Level Crossing No": str(self._station_values.get("Level Crossing No", "")),
+            "Hectometer Post": str(self._station_values.get("Hectometer Post", "")),
+            "Name": str(self._station_values.get("Name", "")),
+            "Designation": str(self._station_values.get("Designation", "")),
             "Lattitude": f"{float(d.get('lat', 0.0)):.5f}",
             "Longitude": f"{float(d.get('lon', 0.0)):.5f}",
             "Distance": f"{float(d.get('dist', 0.0)):.2f}",
@@ -584,6 +603,7 @@ def _apply_station_reference(track_app):
         return
     ref_type, ref_value, values = _extract_station_reference(track_app.entry)
     track_app.logger.set_reference(ref_type, ref_value)
+    track_app.logger._station_values = values
     station_code = values.get("Station Code", "").strip()
     track_app.logger.set_station(station_code or "BLE")
 
@@ -593,6 +613,9 @@ def _runtime_save_entry(self):
     if not hasattr(app, "logger"):
         return
     _apply_station_reference(app)
+    if hasattr(self, "_runtime_save_btn"):
+        self._runtime_save_btn.setText("DATA ENTRY SAVED")
+        gui_app.QTimer.singleShot(1800, lambda: self._runtime_save_btn.setText("SAVE DATA ENTRY"))
     if hasattr(app, "topbar"):
         app.topbar.push_error("")
 
@@ -614,7 +637,7 @@ def patched_data_entry_init(original_init):
         if bottom_w is None or bottom_w.layout() is None:
             return
         bottom_l = bottom_w.layout()
-        save_btn = gui_app._btn("SAVE DATA ENTRY", "BG", 46, 260)
+        save_btn = gui_app._btn("SAVE DATA ENTRY", "BG", 48, 280)
         save_btn.clicked.connect(lambda: _runtime_save_entry(self))
         insert_at = max(0, bottom_l.count() - 1)
         bottom_l.insertWidget(insert_at, save_btn)
@@ -635,8 +658,8 @@ def patch_touch_keyboard_scaling() -> None:
         screen = gui_app.QApplication.primaryScreen()
         if screen is not None:
             geom = screen.availableGeometry()
-            target_w = int(geom.width() * 0.96)
-            target_h = int(geom.height() * 0.84)
+            target_w = int(geom.width() * 0.99)
+            target_h = int(geom.height() * 0.92)
             self.resize(max(self.width(), target_w), max(self.height(), target_h))
             self.move(
                 geom.x() + (geom.width() - self.width()) // 2,
@@ -646,19 +669,21 @@ def patch_touch_keyboard_scaling() -> None:
             self.resize(int(self.width() * scale), int(self.height() * scale))
         self.setStyleSheet(
             self.styleSheet()
-            + " QLabel{font-size:16pt;} QPushButton{font-size:16pt; min-height:68px; min-width:92px;}"
+            + " QLabel{font-size:18pt;} QPushButton{font-size:18pt; min-height:78px; min-width:104px;}"
         )
+        for lay in self.findChildren(gui_app.QLayout):
+            lay.setSpacing(max(10, lay.spacing()))
         for btn in self.findChildren(gui_app.QPushButton):
-            btn.setMinimumHeight(max(btn.minimumHeight(), 68))
-            btn.setMinimumWidth(max(btn.minimumWidth(), 92))
+            btn.setMinimumHeight(max(btn.minimumHeight(), 78))
+            btn.setMinimumWidth(max(btn.minimumWidth(), 104))
 
     def numpad_wrapper(self, *args, **kwargs):
         numpad_init(self, *args, **kwargs)
         screen = gui_app.QApplication.primaryScreen()
         if screen is not None:
             geom = screen.availableGeometry()
-            target_w = int(geom.width() * 0.65)
-            target_h = int(geom.height() * 0.72)
+            target_w = int(geom.width() * 0.82)
+            target_h = int(geom.height() * 0.86)
             self.resize(max(self.width(), target_w), max(self.height(), target_h))
             self.move(
                 geom.x() + (geom.width() - self.width()) // 2,
@@ -668,11 +693,13 @@ def patch_touch_keyboard_scaling() -> None:
             self.resize(int(self.width() * scale), int(self.height() * scale))
         self.setStyleSheet(
             self.styleSheet()
-            + " QLabel{font-size:16pt;} QPushButton{font-size:16pt; min-height:66px; min-width:88px;}"
+            + " QLabel{font-size:18pt;} QPushButton{font-size:18pt; min-height:74px; min-width:96px;}"
         )
+        for lay in self.findChildren(gui_app.QLayout):
+            lay.setSpacing(max(10, lay.spacing()))
         for btn in self.findChildren(gui_app.QPushButton):
-            btn.setMinimumHeight(max(btn.minimumHeight(), 66))
-            btn.setMinimumWidth(max(btn.minimumWidth(), 88))
+            btn.setMinimumHeight(max(btn.minimumHeight(), 74))
+            btn.setMinimumWidth(max(btn.minimumWidth(), 96))
 
     gui_app.PopupKeyboardDialog.__init__ = popup_wrapper
     gui_app.NumpadDialog.__init__ = numpad_wrapper
@@ -753,6 +780,12 @@ def patched_trackapp_init(original_init):
         self._ui_refresh_timer.setInterval(UI_REFRESH_MS)
         self._ui_refresh_timer.timeout.connect(lambda: _refresh_latest_data(self))
         self._ui_refresh_timer.start()
+        if hasattr(self, "topbar") and self.topbar.layout() is not None:
+            tb = self.topbar.layout()
+            close_tb = gui_app._btn("X", "BX", 36, 56)
+            close_tb.clicked.connect(self.close)
+            tb.insertWidget(0, close_tb, 0, gui_app.Qt.AlignLeft | gui_app.Qt.AlignVCenter)
+            self._runtime_topbar_close_btn = close_tb
         close_btn = gui_app.QPushButton("X", self)
         close_btn.setObjectName("BX")
         close_btn.setGeometry(8, 8, 42, 30)
