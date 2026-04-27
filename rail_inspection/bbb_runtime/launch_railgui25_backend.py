@@ -603,11 +603,18 @@ def patched_data_entry_init(original_init):
         root = self.layout()
         if root is None or root.count() < 3:
             return
+        hdr_w = root.itemAt(0).widget()
+        if hdr_w is not None and hdr_w.layout() is not None:
+            hdr_l = hdr_w.layout()
+            close_btn = gui_app._btn("X", "BX", 38, 56)
+            close_btn.clicked.connect(lambda: self.window().close())
+            hdr_l.insertWidget(0, close_btn, 0, gui_app.Qt.AlignLeft | gui_app.Qt.AlignVCenter)
+            self._runtime_entry_close_btn = close_btn
         bottom_w = root.itemAt(2).widget()
         if bottom_w is None or bottom_w.layout() is None:
             return
         bottom_l = bottom_w.layout()
-        save_btn = gui_app._btn("SAVE DATA ENTRY", "BG", 40, 210)
+        save_btn = gui_app._btn("SAVE DATA ENTRY", "BG", 46, 260)
         save_btn.clicked.connect(lambda: _runtime_save_entry(self))
         insert_at = max(0, bottom_l.count() - 1)
         bottom_l.insertWidget(insert_at, save_btn)
@@ -616,7 +623,7 @@ def patched_data_entry_init(original_init):
 
 
 def patch_touch_keyboard_scaling() -> None:
-    scale = float(os.environ.get("RAIL_TOUCH_SCALE", "1.2"))
+    scale = float(os.environ.get("RAIL_TOUCH_SCALE", "1.6"))
     if scale <= 1.0:
         return
 
@@ -625,15 +632,47 @@ def patch_touch_keyboard_scaling() -> None:
 
     def popup_wrapper(self, *args, **kwargs):
         popup_init(self, *args, **kwargs)
-        self.resize(int(self.width() * scale), int(self.height() * scale))
+        screen = gui_app.QApplication.primaryScreen()
+        if screen is not None:
+            geom = screen.availableGeometry()
+            target_w = int(geom.width() * 0.96)
+            target_h = int(geom.height() * 0.84)
+            self.resize(max(self.width(), target_w), max(self.height(), target_h))
+            self.move(
+                geom.x() + (geom.width() - self.width()) // 2,
+                geom.y() + (geom.height() - self.height()) // 2,
+            )
+        else:
+            self.resize(int(self.width() * scale), int(self.height() * scale))
+        self.setStyleSheet(
+            self.styleSheet()
+            + " QLabel{font-size:16pt;} QPushButton{font-size:16pt; min-height:68px; min-width:92px;}"
+        )
         for btn in self.findChildren(gui_app.QPushButton):
-            btn.setMinimumHeight(max(btn.minimumHeight(), 54))
+            btn.setMinimumHeight(max(btn.minimumHeight(), 68))
+            btn.setMinimumWidth(max(btn.minimumWidth(), 92))
 
     def numpad_wrapper(self, *args, **kwargs):
         numpad_init(self, *args, **kwargs)
-        self.resize(int(self.width() * scale), int(self.height() * scale))
+        screen = gui_app.QApplication.primaryScreen()
+        if screen is not None:
+            geom = screen.availableGeometry()
+            target_w = int(geom.width() * 0.65)
+            target_h = int(geom.height() * 0.72)
+            self.resize(max(self.width(), target_w), max(self.height(), target_h))
+            self.move(
+                geom.x() + (geom.width() - self.width()) // 2,
+                geom.y() + (geom.height() - self.height()) // 2,
+            )
+        else:
+            self.resize(int(self.width() * scale), int(self.height() * scale))
+        self.setStyleSheet(
+            self.styleSheet()
+            + " QLabel{font-size:16pt;} QPushButton{font-size:16pt; min-height:66px; min-width:88px;}"
+        )
         for btn in self.findChildren(gui_app.QPushButton):
-            btn.setMinimumHeight(max(btn.minimumHeight(), 54))
+            btn.setMinimumHeight(max(btn.minimumHeight(), 66))
+            btn.setMinimumWidth(max(btn.minimumWidth(), 88))
 
     gui_app.PopupKeyboardDialog.__init__ = popup_wrapper
     gui_app.NumpadDialog.__init__ = numpad_wrapper
