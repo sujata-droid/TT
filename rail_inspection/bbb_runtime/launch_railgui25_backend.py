@@ -629,8 +629,38 @@ def patched_data_entry_init(original_init):
         bottom_w = root.itemAt(2).widget()
         if bottom_w is None or bottom_w.layout() is None:
             return
+        bottom_w.setFixedHeight(88)
         bottom_l = bottom_w.layout()
-        save_btn = gui_app._btn("SAVE DATA ENTRY", "BG", 48, 280)
+        back_btn = None
+        for btn in self.findChildren(gui_app.QPushButton):
+            if "BACK" in btn.text():
+                back_btn = btn
+                break
+        btn_style = (
+            f"QPushButton{{"
+            f" background:{gui_app.CYAN_LT}; border:2px solid {gui_app.CYAN};"
+            f" border-radius:8px; color:{gui_app.CYAN};"
+            f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
+            f" font-size:15pt; font-weight:bold; padding:0px 26px;}}"
+            f"QPushButton:pressed{{"
+            f" background:{gui_app.CYAN}; color:#FFFFFF; border:2px solid {gui_app.CYAN};}}"
+        )
+        if back_btn is not None:
+            back_btn.setFixedHeight(72)
+            back_btn.setMinimumWidth(220)
+            back_btn.setStyleSheet(btn_style)
+        save_btn = gui_app.QPushButton("SAVE DATA ENTRY")
+        save_btn.setFixedHeight(72)
+        save_btn.setMinimumWidth(320)
+        save_btn.setStyleSheet(
+            f"QPushButton{{"
+            f" background:{gui_app.NEON_LT}; border:2px solid {gui_app.NEON};"
+            f" border-radius:8px; color:{gui_app.NEON};"
+            f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
+            f" font-size:15pt; font-weight:bold; padding:0px 26px;}}"
+            f"QPushButton:pressed{{"
+            f" background:{gui_app.NEON}; color:#FFFFFF; border:2px solid {gui_app.NEON};}}"
+        )
         save_btn.clicked.connect(lambda: _runtime_save_entry(self))
         insert_at = max(0, bottom_l.count() - 1)
         bottom_l.insertWidget(insert_at, save_btn)
@@ -901,7 +931,7 @@ def _position_topbar_close_button(track_app):
         return
     topbar_h = track_app.topbar.height()
     btn = track_app._runtime_topbar_close_btn
-    btn.move(322, max(8, (topbar_h - btn.height()) // 2))
+    btn.move(286, max(8, (topbar_h - btn.height()) // 2))
 
 
 def _cloud_done(self, ok, message):
@@ -992,9 +1022,15 @@ def patched_trackapp_init(original_init):
         if hasattr(self, "topbar"):
             close_tb = gui_app.QPushButton("X", self.topbar)
             close_tb.setObjectName("BX")
-            close_tb.setFixedSize(52, 38)
+            close_tb.setFixedSize(56, 42)
+            close_tb.setStyleSheet(
+                f"QPushButton{{background:#FFEBEE; border:2px solid {gui_app.RED}; border-radius:8px;"
+                f" color:{gui_app.RED}; font-size:16pt; font-weight:bold;}}"
+                f"QPushButton:pressed{{background:{gui_app.RED}; color:#FFFFFF;}}"
+            )
             close_tb.clicked.connect(self.close)
             close_tb.raise_()
+            close_tb.show()
             self._runtime_topbar_close_btn = close_tb
             _position_topbar_close_button(self)
     return wrapper
