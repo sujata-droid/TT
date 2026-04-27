@@ -263,6 +263,9 @@ class BufferedCSVLogger(gui_app.CSVLogger):
         os.makedirs(directory, exist_ok=True)
         safe_ts = gui_app.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"BLE_{safe_ts}.csv"
+        station_values = dict(getattr(self, "_station_values", {}) or {})
+        ref_type = getattr(self, "_ref_type", "")
+        ref_value = getattr(self, "_ref_value", "")
         self.path = os.path.join(directory, filename)
         self._f = open(self.path, "w", newline="", encoding="utf-8")
         self._w = gui_app.csv.DictWriter(self._f, fieldnames=CSV_FIELDS)
@@ -273,7 +276,9 @@ class BufferedCSVLogger(gui_app.CSVLogger):
         self._mark = []
         self.count = 0
         self._unflushed = 0
-        self._station_values = {}
+        self._station_values = station_values
+        self._ref_type = ref_type
+        self._ref_value = ref_value
 
     def write(self, d):
         if not self._w:
@@ -598,10 +603,31 @@ def _extract_station_reference(entry_page):
     return ref_type, ref_value, values
 
 
+def _entry_values_from_track_app(track_app):
+    saved_values = dict(getattr(track_app, "_runtime_saved_entry_values", {}) or {})
+    if saved_values:
+        values = {k: str(v).strip() for k, v in saved_values.items()}
+        ref_type = ""
+        ref_value = ""
+        for key, label in STATION_REF_PRIORITY:
+            if values.get(key):
+                ref_type = label
+                ref_value = values.get(key, "")
+                break
+        if not ref_type and values.get("Chainage"):
+            ref_type = "Chainage"
+            ref_value = values.get("Chainage", "")
+        parts = [f"{k}: {v}" for k, v in values.items() if v]
+        if parts:
+            ref_value = " / ".join(parts)
+        return ref_type, ref_value, values
+    if hasattr(track_app, "entry"):
+        return _extract_station_reference(track_app.entry)
+    return "", "", {}
+
+
 def _apply_station_reference(track_app):
-    if not hasattr(track_app, "entry"):
-        return
-    ref_type, ref_value, values = _extract_station_reference(track_app.entry)
+    ref_type, ref_value, values = _entry_values_from_track_app(track_app)
     track_app.logger.set_reference(ref_type, ref_value)
     track_app.logger._station_values = values
     station_code = values.get("Station Code", "").strip()
@@ -612,6 +638,9 @@ def _runtime_save_entry(self):
     app = self.window()
     if not hasattr(app, "logger"):
         return
+    if hasattr(app, "entry"):
+        _, _, values = _extract_station_reference(app.entry)
+        app._runtime_saved_entry_values = values
     _apply_station_reference(app)
     if hasattr(self, "_runtime_save_btn"):
         self._runtime_save_btn.setText("DATA ENTRY SAVED")
@@ -956,10 +985,10 @@ def optimized_on_toggle(self, running):
     if running:
         self.logger.set_reference("", "")
         self.logger.set_station("BLE")
-        _apply_station_reference(self)
         self.sensor.reset()
         self.history = {k: [] for k in self.history}
         self.logger.start(self.cfg["csv_dir"], self.cfg.get("hl_sec", 30))
+        _apply_station_reference(self)
     else:
         saved_path = self.logger.stop()
         self.dash.set_session(self.logger.count, False, saved_path or "")
@@ -1009,6 +1038,7 @@ def patched_trackapp_init(original_init):
         self._latest_sensor_data = None
         self._rendered_sensor_data = None
         self._rendered_session_state = None
+        self._runtime_saved_entry_values = {}
         self.logger = BufferedCSVLogger()
         self.net.stop()
         self.net.wait(1000)
