@@ -651,13 +651,7 @@ def patch_touch_keyboard_scaling() -> None:
         screen = gui_app.QApplication.primaryScreen()
         if screen is not None:
             geom = screen.availableGeometry()
-            target_w = int(geom.width() * 0.99)
-            target_h = int(geom.height() * 0.92)
-            self.resize(max(self.width(), target_w), max(self.height(), target_h))
-            self.move(
-                geom.x() + (geom.width() - self.width()) // 2,
-                geom.y() + (geom.height() - self.height()) // 2,
-            )
+            self.setGeometry(geom)
         else:
             self.resize(int(self.width() * scale), int(self.height() * scale))
         self.setStyleSheet(
@@ -665,17 +659,26 @@ def patch_touch_keyboard_scaling() -> None:
             + " QLabel{font-size:18pt;} QPushButton{font-size:18pt; min-height:78px; min-width:104px;}"
         )
         for btn in self.findChildren(gui_app.QPushButton):
-            btn.setMinimumHeight(max(btn.minimumHeight(), 78))
-            btn.setMinimumWidth(max(btn.minimumWidth(), 104))
+            bw, bh = max(1, btn.width()), max(1, btn.height())
+            nw = max(104, int(bw * 1.7))
+            nh = max(78, int(bh * 1.7))
+            btn.setFixedSize(nw, nh)
+            f = btn.font()
+            f.setPointSize(max(16, f.pointSize() + 4))
+            btn.setFont(f)
+        for lbl in self.findChildren(gui_app.QLabel):
+            f = lbl.font()
+            f.setPointSize(max(14, f.pointSize() + 4))
+            lbl.setFont(f)
 
     def numpad_wrapper(self, *args, **kwargs):
         numpad_init(self, *args, **kwargs)
         screen = gui_app.QApplication.primaryScreen()
         if screen is not None:
             geom = screen.availableGeometry()
-            target_w = int(geom.width() * 0.82)
-            target_h = int(geom.height() * 0.86)
-            self.resize(max(self.width(), target_w), max(self.height(), target_h))
+            target_w = int(geom.width() * 0.95)
+            target_h = int(geom.height() * 0.90)
+            self.resize(target_w, target_h)
             self.move(
                 geom.x() + (geom.width() - self.width()) // 2,
                 geom.y() + (geom.height() - self.height()) // 2,
@@ -687,8 +690,17 @@ def patch_touch_keyboard_scaling() -> None:
             + " QLabel{font-size:18pt;} QPushButton{font-size:18pt; min-height:74px; min-width:96px;}"
         )
         for btn in self.findChildren(gui_app.QPushButton):
-            btn.setMinimumHeight(max(btn.minimumHeight(), 74))
-            btn.setMinimumWidth(max(btn.minimumWidth(), 96))
+            bw, bh = max(1, btn.width()), max(1, btn.height())
+            nw = max(96, int(bw * 1.5))
+            nh = max(74, int(bh * 1.5))
+            btn.setFixedSize(nw, nh)
+            f = btn.font()
+            f.setPointSize(max(15, f.pointSize() + 4))
+            btn.setFont(f)
+        for lbl in self.findChildren(gui_app.QLabel):
+            f = lbl.font()
+            f.setPointSize(max(14, f.pointSize() + 3))
+            lbl.setFont(f)
 
     gui_app.PopupKeyboardDialog.__init__ = popup_wrapper
     gui_app.NumpadDialog.__init__ = numpad_wrapper
@@ -769,11 +781,13 @@ def patched_trackapp_init(original_init):
         self._ui_refresh_timer.setInterval(UI_REFRESH_MS)
         self._ui_refresh_timer.timeout.connect(lambda: _refresh_latest_data(self))
         self._ui_refresh_timer.start()
-        if hasattr(self, "topbar") and self.topbar.layout() is not None:
-            tb = self.topbar.layout()
-            close_tb = gui_app._btn("X", "BX", 36, 56)
+        if hasattr(self, "topbar"):
+            close_tb = gui_app.QPushButton("X", self.topbar)
+            close_tb.setObjectName("BX")
+            close_tb.setFixedSize(44, 34)
             close_tb.clicked.connect(self.close)
-            tb.insertWidget(0, close_tb, 0, gui_app.Qt.AlignLeft | gui_app.Qt.AlignVCenter)
+            close_tb.move(168, 18)
+            close_tb.raise_()
             self._runtime_topbar_close_btn = close_tb
     return wrapper
 
