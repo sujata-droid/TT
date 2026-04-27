@@ -626,13 +626,6 @@ def patched_data_entry_init(original_init):
         root = self.layout()
         if root is None or root.count() < 3:
             return
-        hdr_w = root.itemAt(0).widget()
-        if hdr_w is not None and hdr_w.layout() is not None:
-            hdr_l = hdr_w.layout()
-            close_btn = gui_app._btn("X", "BX", 38, 56)
-            close_btn.clicked.connect(lambda: self.window().close())
-            hdr_l.insertWidget(0, close_btn, 0, gui_app.Qt.AlignLeft | gui_app.Qt.AlignVCenter)
-            self._runtime_entry_close_btn = close_btn
         bottom_w = root.itemAt(2).widget()
         if bottom_w is None or bottom_w.layout() is None:
             return
@@ -671,8 +664,6 @@ def patch_touch_keyboard_scaling() -> None:
             self.styleSheet()
             + " QLabel{font-size:18pt;} QPushButton{font-size:18pt; min-height:78px; min-width:104px;}"
         )
-        for lay in self.findChildren(gui_app.QLayout):
-            lay.setSpacing(max(10, lay.spacing()))
         for btn in self.findChildren(gui_app.QPushButton):
             btn.setMinimumHeight(max(btn.minimumHeight(), 78))
             btn.setMinimumWidth(max(btn.minimumWidth(), 104))
@@ -695,8 +686,6 @@ def patch_touch_keyboard_scaling() -> None:
             self.styleSheet()
             + " QLabel{font-size:18pt;} QPushButton{font-size:18pt; min-height:74px; min-width:96px;}"
         )
-        for lay in self.findChildren(gui_app.QLayout):
-            lay.setSpacing(max(10, lay.spacing()))
         for btn in self.findChildren(gui_app.QPushButton):
             btn.setMinimumHeight(max(btn.minimumHeight(), 74))
             btn.setMinimumWidth(max(btn.minimumWidth(), 96))
@@ -786,12 +775,6 @@ def patched_trackapp_init(original_init):
             close_tb.clicked.connect(self.close)
             tb.insertWidget(0, close_tb, 0, gui_app.Qt.AlignLeft | gui_app.Qt.AlignVCenter)
             self._runtime_topbar_close_btn = close_tb
-        close_btn = gui_app.QPushButton("X", self)
-        close_btn.setObjectName("BX")
-        close_btn.setGeometry(8, 8, 42, 30)
-        close_btn.clicked.connect(self.close)
-        close_btn.raise_()
-        self._runtime_close_btn = close_btn
     return wrapper
 
 
