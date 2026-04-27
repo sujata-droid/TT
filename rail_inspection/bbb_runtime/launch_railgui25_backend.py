@@ -283,6 +283,12 @@ class BufferedCSVLogger(gui_app.CSVLogger):
     def write(self, d):
         if not self._w:
             return
+        track_app = getattr(self, "_track_app", None)
+        if track_app is not None:
+            try:
+                _apply_station_reference(track_app)
+            except Exception:
+                pass
         cross = d.get("cross", 0)
         twist = d.get("twist", 0)
         row = {
@@ -697,6 +703,34 @@ def patched_data_entry_init(original_init):
     return wrapper
 
 
+def patched_calibration_page_init(original_init):
+    def wrapper(self, cfg):
+        original_init(self, cfg)
+        for sc in self.findChildren(gui_app.QScrollArea):
+            sc.setStyleSheet(
+                "QScrollArea{ border:none; background:#FFFFFF; }"
+                "QScrollBar:vertical{ background:#ECEFF4; width:42px; }"
+                "QScrollBar::handle:vertical{ background:#C8D0DA; border-radius:21px; min-height:56px; }"
+                "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical{ height:0; }"
+            )
+        for btn in self.findChildren(gui_app.QPushButton):
+            txt = btn.text().encode("ascii", "replace").decode("ascii")
+            if "BACK" in txt:
+                btn.setFixedHeight(72)
+                btn.setMinimumWidth(220)
+                btn.setStyleSheet(
+                    f"QPushButton{{"
+                    f" background:{gui_app.CYAN_LT}; border:2px solid {gui_app.CYAN};"
+                    f" border-radius:8px; color:{gui_app.CYAN};"
+                    f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
+                    f" font-size:15pt; font-weight:bold; padding:0px 26px;}}"
+                    f"QPushButton:pressed{{"
+                    f" background:{gui_app.CYAN}; color:#FFFFFF; border:2px solid {gui_app.CYAN};}}"
+                )
+                break
+    return wrapper
+
+
 class RuntimePopupKeyboardDialog(gui_app.QDialog):
     def __init__(self, field_title="Enter Value", current="", parent=None):
         super().__init__(parent)
@@ -1040,6 +1074,7 @@ def patched_trackapp_init(original_init):
         self._rendered_session_state = None
         self._runtime_saved_entry_values = {}
         self.logger = BufferedCSVLogger()
+        self.logger._track_app = self
         self.net.stop()
         self.net.wait(1000)
         self.net = RuntimeNetThread(self.cfg)
@@ -1085,6 +1120,7 @@ def apply_runtime_patches() -> None:
     gui_app.DashboardPage.set_session = optimized_dash_session
     gui_app.DataEntryPage.push_sensor_data = optimized_entry_push
     gui_app.DataEntryPage.__init__ = patched_data_entry_init(gui_app.DataEntryPage.__init__)
+    gui_app.CalibrationPage.__init__ = patched_calibration_page_init(gui_app.CalibrationPage.__init__)
     gui_app.TrackApp._apply_screen_geometry = safe_apply_screen_geometry
     gui_app.TrackApp._on_data = optimized_on_data
     gui_app.TrackApp._on_toggle = optimized_on_toggle
