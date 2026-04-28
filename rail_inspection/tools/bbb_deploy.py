@@ -26,12 +26,14 @@ DEPLOY_ITEMS = [
     "run_encoder_console.sh",
     "run_railgui25.sh",
     "run_railgui25_diag.sh",
+    "setup_encoder_eqep.sh",
     "setup_encoder_pru.sh",
     "start_gui_session.sh",
     "bbb_runtime",
     "pru",
     "sensor_board",
     "tools/encoder_console_test.py",
+    "tools/encoder_eqep_console_test.py",
 ]
 
 
@@ -179,15 +181,18 @@ def deploy(args):
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/setup.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/run_railgui25.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/run_railgui25_diag.sh')}", timeout=30)
+    run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/run_encoder_console.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/push_latest_csv.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/bbb_runtime/run_railgui25_backend.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/configure_autologin_startx.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/start_gui_session.sh')}", timeout=30)
+    run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/setup_encoder_eqep.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/setup_encoder_pru.sh')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/bbb_runtime/backend_bridge.py')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/bbb_runtime/launch_railgui25_backend.py')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/railgui25.py')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/encoder_console_test.py')}", timeout=30)
+    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/encoder_eqep_console_test.py')}", timeout=30)
     run(client, f"cd {shell_quote(REMOTE_ROOT + '/sensor_board')} && make clean && make", timeout=120)
     run(client, f"find {shell_quote(REMOTE_ROOT)} -type d -name __pycache__ -prune -exec rm -rf {{}} +", timeout=60)
     client.close()

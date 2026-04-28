@@ -19,12 +19,12 @@ echo "ppr=$RAIL_ENCODER_PPR"
 echo "wheel_diameter_mm=$RAIL_WHEEL_DIAMETER_MM"
 echo
 
-echo "[1/2] Setting up PRU quadrature input"
-$SUDO bash "$ROOT_DIR/setup_encoder_pru.sh"
+echo "[1/2] Setting up eQEP2 encoder input"
+$SUDO bash "$ROOT_DIR/setup_encoder_eqep.sh"
 echo
 
 echo "[2/2] Launching console reader"
-exec $SUDO python3 "$ROOT_DIR/tools/encoder_console_test.py" \
+exec $SUDO python3 "$ROOT_DIR/tools/encoder_eqep_console_test.py" \
     --ppr "$RAIL_ENCODER_PPR" \
     --wheel-diameter-mm "$RAIL_WHEEL_DIAMETER_MM" \
     "$@"

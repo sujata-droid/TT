@@ -13,8 +13,8 @@
 #                         behave as GPIO and the SCL3300 gets zero
 #                         SPI transactions.
 #  3. Build C service   -- Compile sensor_service (acquisition daemon)
-#  4. Skip PRU firmware -- Rotary encoder removed from runtime
-#  5. Skip PRU load     -- Runtime publishes encoder_ok=1 without chainage
+#  4. Skip PRU firmware -- Minimal encoder test uses eQEP2 instead
+#  5. Skip PRU load     -- PRU path is not required for bare-minimum test
 #  6. Create survey dir  -- /home/debian/surveys with correct permissions
 #  7. Verify             -- Print status of all components
 #
@@ -72,7 +72,8 @@ $CONFIG_PIN P9_18 spi       && ok "P9_18 -> spi     (SCL3300 MOSI)"  || warn "P9
 $CONFIG_PIN P9_21 spi       && ok "P9_21 -> spi     (SCL3300 MISO)"  || warn "P9_21 config failed"
 $CONFIG_PIN P9_22 spi_sclk  && ok "P9_22 -> spi_sclk (SCL3300 SCK)" || warn "P9_22 config failed"
 
-warn "Rotary encoder removed: skipping encoder pinmux."
+$CONFIG_PIN P8_11 qep      && ok "P8_11 -> qep     (Encoder B / eQEP2B)" || warn "P8_11 config failed"
+$CONFIG_PIN P8_12 qep      && ok "P8_12 -> qep     (Encoder A / eQEP2A)" || warn "P8_12 config failed"
 
 # Verify spidev appeared
 if [ -e /dev/spidev0.0 ]; then
@@ -97,12 +98,12 @@ cd ..
 # ── 4. Build PRU firmware ─────────────────────────────────────────────
 echo ""
 echo "[4/7] Skipping PRU firmware build..."
-warn "Rotary encoder removed; PRU firmware is not required."
+warn "Minimal encoder testing is using eQEP2, not the PRU path."
 
 # ── 5. Load PRU firmware ──────────────────────────────────────────────
 echo ""
 echo "[5/7] Skipping PRU firmware load..."
-warn "Rotary encoder removed; PRU0 is not used by sensor_service."
+warn "Minimal encoder testing is using eQEP2, not the PRU path."
 
 # ── 6. Survey directory ───────────────────────────────────────────────
 echo ""
@@ -119,7 +120,7 @@ echo "[7/7] System verification..."
 
 echo ""
 echo "  SPI device:    $(ls -l /dev/spidev0.0 2>/dev/null || echo 'NOT FOUND')"
-echo "  PRU firmware:  NOT REQUIRED (rotary encoder removed)"
+echo "  PRU firmware:  NOT REQUIRED for basic eQEP2 encoder test"
 echo "  sensor_service:$(ls -lh sensor_board/sensor_service 2>/dev/null || echo 'NOT BUILT')"
 echo "  Survey dir:    $(ls -ld $SURVEY_DIR 2>/dev/null || echo 'NOT FOUND')"
 
