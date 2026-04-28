@@ -23,6 +23,7 @@ DEPLOY_ITEMS = [
     "configure_autologin_startx.sh",
     "push_latest_csv.sh",
     "railgui25.py",
+    "run_encoder_console.sh",
     "run_railgui25.sh",
     "run_railgui25_diag.sh",
     "setup_encoder_pru.sh",

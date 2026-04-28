@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_PIN="$(command -v config-pin 2>/dev/null || echo /usr/bin/config-pin)"
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -48,4 +48,4 @@ if [ "$started" -ne 1 ]; then
 fi
 
 echo "[ENC] Launch test with:"
-echo "sudo python3 $ROOT_DIR/tools/encoder_console_test.py --ppr 600 --wheel-diameter-mm 250"
+echo "sudo python3 $ROOT_DIR/tools/encoder_console_test.py --ppr 400 --wheel-diameter-mm 250"

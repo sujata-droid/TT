@@ -23,7 +23,7 @@ def read_block(mem, base_offset):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--wheel-diameter-mm", type=float, default=250.0)
-    parser.add_argument("--ppr", type=int, default=600)
+    parser.add_argument("--ppr", type=int, default=400)
     parser.add_argument("--sample-hz", type=float, default=10.0)
     parser.add_argument("--duration", type=float, default=0.0,
                         help="0 means run until Ctrl+C")
