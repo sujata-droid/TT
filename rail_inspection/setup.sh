@@ -32,10 +32,10 @@ echo " Rail Inspection System Setup"
 echo " BeagleBone Black | SCL3300 Inclinometer | railgui25 wrapper runtime"
 echo "============================================================"
 
-# ── Root check ───────────────────────────────────────────────────────
+# â”€â”€ Root check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 [ "$(id -u)" -eq 0 ] || fail "Run as root: sudo bash setup.sh"
 
-# ── 1. Install packages ──────────────────────────────────────────────
+# â”€â”€ 1. Install packages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo ""
 echo "[1/7] Installing packages..."
 apt-get update -qq
@@ -58,7 +58,7 @@ CONFIG_PIN=$(command -v config-pin 2>/dev/null || echo "")
 [ -z "$CONFIG_PIN" ] && CONFIG_PIN="/usr/bin/config-pin"
 [ -x "$CONFIG_PIN" ] || fail "config-pin not found. Install beaglebone-universal-io"
 
-# ── 2. Pin-mux configuration ─────────────────────────────────────────
+# â”€â”€ 2. Pin-mux configuration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo ""
 echo "[2/7] Configuring pins..."
 
@@ -86,7 +86,7 @@ else
                            || warn "/dev/spidev0.0 still missing. Check DTS overlay."
 fi
 
-# ── 3. Build C sensor service ─────────────────────────────────────────
+# â”€â”€ 3. Build C sensor service â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo ""
 echo "[3/7] Building sensor service..."
 cd "$(dirname "$0")/sensor_board"
@@ -95,17 +95,17 @@ make 2>&1 | tail -5
 [ -x sensor_service ] && ok "sensor_service built" || fail "sensor_service build failed"
 cd ..
 
-# ── 4. Build PRU firmware ─────────────────────────────────────────────
+# â”€â”€ 4. Build PRU firmware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo ""
 echo "[4/7] Skipping PRU firmware build..."
 warn "Minimal encoder testing is using eQEP2, not the PRU path."
 
-# ── 5. Load PRU firmware ──────────────────────────────────────────────
+# â”€â”€ 5. Load PRU firmware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo ""
 echo "[5/7] Skipping PRU firmware load..."
 warn "Minimal encoder testing is using eQEP2, not the PRU path."
 
-# ── 6. Survey directory ───────────────────────────────────────────────
+# â”€â”€ 6. Survey directory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo ""
 echo "[6/7] Creating survey directory..."
 SURVEY_DIR="/home/debian/surveys"
@@ -114,7 +114,7 @@ chown debian:debian "$SURVEY_DIR" 2>/dev/null || chown 1000:1000 "$SURVEY_DIR" |
 chmod 755 "$SURVEY_DIR"
 ok "Survey dir: $SURVEY_DIR"
 
-# ── 7. Verify ─────────────────────────────────────────────────────────
+# â”€â”€ 7. Verify â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo ""
 echo "[7/7] System verification..."
 
