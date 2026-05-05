@@ -2,6 +2,7 @@
 """Console-side PRU encoder monitor for the BeagleBone."""
 
 import argparse
+import math
 import mmap
 import os
 import struct
@@ -12,12 +13,17 @@ import time
 PRU_DMEM_PHYS = 0x4A300000
 PRU_MAP_SIZE = mmap.PAGESIZE
 PRU_STRUCT = struct.Struct("<iIII")
+COUNT_COOKIE = 0xA5A5A5A5
 
 
 def read_block(mem, base_offset):
-    mem.seek(base_offset)
-    raw = mem.read(PRU_STRUCT.size)
-    return PRU_STRUCT.unpack(raw)
+    for _ in range(8):
+        mem.seek(base_offset)
+        raw = mem.read(PRU_STRUCT.size)
+        count, status, sample_us, reserved = PRU_STRUCT.unpack(raw)
+        if ((count & 0xFFFFFFFF) ^ COUNT_COOKIE) == reserved:
+            return count, status, sample_us, reserved
+    return count, status, sample_us, reserved
 
 
 def main():
@@ -25,6 +31,8 @@ def main():
     parser.add_argument("--wheel-diameter-mm", type=float, default=250.0)
     parser.add_argument("--ppr", type=int, default=400)
     parser.add_argument("--sample-hz", type=float, default=10.0)
+    parser.add_argument("--max-delta", type=int, default=0,
+                        help="ignore count jumps larger than this between displayed samples")
     parser.add_argument("--duration", type=float, default=0.0,
                         help="0 means run until Ctrl+C")
     args = parser.parse_args()
@@ -35,6 +43,8 @@ def main():
         raise SystemExit("--ppr must be > 0")
     if args.sample_hz <= 0:
         raise SystemExit("--sample-hz must be > 0")
+    if args.max_delta < 0:
+        raise SystemExit("--max-delta must be >= 0")
 
     counts_per_rev = args.ppr * 4.0
     mm_per_count = (3.141592653589793 * args.wheel_diameter_mm) / counts_per_rev
@@ -47,6 +57,7 @@ def main():
 
         try:
             prev_count = None
+            zero_count = None
             start = time.time()
             print("PRU encoder console test")
             print(f"ppr={args.ppr} counts_per_rev={counts_per_rev:.0f} wheel_diameter_mm={args.wheel_diameter_mm:.2f}")
@@ -54,12 +65,18 @@ def main():
             print("Fields: elapsed_s count delta dir chainage_m pru_status sample_us")
             while True:
                 count, status, sample_us, _reserved = read_block(mem, offset)
+                if zero_count is None:
+                    zero_count = count
+                count -= zero_count
                 now = time.time()
                 elapsed = now - start
                 if prev_count is None:
                     delta = 0
                 else:
                     delta = count - prev_count
+                    if args.max_delta and math.fabs(delta) > args.max_delta:
+                        count = prev_count
+                        delta = 0
                 prev_count = count
 
                 if delta > 0:

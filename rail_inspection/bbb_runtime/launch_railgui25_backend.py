@@ -655,9 +655,53 @@ def _runtime_save_entry(self):
         app.topbar.push_error("")
 
 
+def _runtime_tune_station_params(data_entry_page):
+    station = getattr(data_entry_page, "_station_params", None)
+    if station is None:
+        return
+
+    label_style = (
+        "color:#5B6575; font-size:9.5pt; font-weight:700;"
+        " background:transparent; border:none;"
+    )
+    field_empty = (
+        "QPushButton { background:#F8FAFB; border:1px solid #C8D0DA; border-radius:8px;"
+        " padding:0 10px; color:#94A3B8; font-size:10.5pt; text-align:left; }"
+        "QPushButton:hover { background:#FFFFFF; border-color:#1565C0; }"
+        "QPushButton:pressed { background:#EAF3FF; }"
+    )
+    field_filled = (
+        "QPushButton { background:#F8FAFB; border:1px solid #C8D0DA; border-radius:8px;"
+        " padding:0 10px; color:#1A2332; font-size:10.5pt; text-align:left; }"
+        "QPushButton:hover { background:#FFFFFF; border-color:#1565C0; }"
+        "QPushButton:pressed { background:#EAF3FF; }"
+    )
+
+    for row_layout in station.findChildren(gui_app.QHBoxLayout):
+        if row_layout.count() < 2:
+            continue
+        label = row_layout.itemAt(0).widget()
+        field = row_layout.itemAt(1).widget()
+        if not isinstance(label, gui_app.QLabel):
+            continue
+        if not isinstance(field, gui_app.QPushButton):
+            continue
+
+        row_layout.setSpacing(10)
+        label.setFixedWidth(150)
+        label.setMinimumHeight(42)
+        label.setWordWrap(True)
+        label.setStyleSheet(label_style)
+        field.setFixedHeight(42)
+        current_text = field.text().strip()
+        is_empty = current_text in {"", "Tap to enter", "Official name", "Designation"}
+        field.setStyleSheet(field_empty if is_empty else field_filled)
+
+
 def patched_data_entry_init(original_init):
     def wrapper(self):
         original_init(self)
+        _runtime_tune_station_params(self)
         root = self.layout()
         if root is None or root.count() < 3:
             return

@@ -68,6 +68,7 @@ volatile register uint32_t __R30;   /* output register – unused here     */
 /* ── Encoder pin bit indices in R31 ──────────────────────────────────── */
 #define ENC_A_BIT   5u   /* P9_27  =  pr1_pru0_pru_r31_5 */
 #define ENC_B_BIT   2u   /* P9_30  =  pr1_pru0_pru_r31_2 */
+#define COUNT_COOKIE 0xA5A5A5A5u
 
 /*
  * Sample period: 2000 PRU cycles = 10 µs at 200 MHz.
@@ -75,6 +76,7 @@ volatile register uint32_t __R30;   /* output register – unused here     */
  * busy-wait loop.  The compiler will NOT optimise it away.
  */
 #define SAMPLE_CYCLES   2000u
+#define STABLE_SAMPLES  1u
 
 /*
  * Quadrature Event Matrix – fully unrolled for zero branch cost.
@@ -104,10 +106,12 @@ void main(void) {
     DRAM_COUNT  = 0;
     DRAM_STATUS = 0;
     DRAM_DBG_US = SAMPLE_CYCLES / 200u;  /* = 10 µs, static debug info */
-    DRAM_RSVD   = 0;
+    DRAM_RSVD   = ((uint32_t)0) ^ COUNT_COOKIE;
 
-    int32_t  count   = 0;
-    uint32_t prev_ab = 0;
+    int32_t  count        = 0;
+    uint32_t prev_ab      = 0;
+    uint32_t pending_ab   = 0;
+    uint32_t pending_same = 0;
 
     /* Latch initial encoder state to avoid a false edge on first sample */
     {
@@ -115,6 +119,8 @@ void main(void) {
         uint32_t a = (r >> ENC_A_BIT) & 1u;
         uint32_t b = (r >> ENC_B_BIT) & 1u;
         prev_ab = (a << 1u) | b;
+        pending_ab = prev_ab;
+        pending_same = STABLE_SAMPLES;
     }
 
     /* Signal ARM: firmware is live and counting */
@@ -129,6 +135,27 @@ void main(void) {
         uint32_t b       = (r >> ENC_B_BIT) & 1u;
         uint32_t curr_ab = (a << 1u) | b;
 
+        /*
+         * Require a new A/B state to remain stable for two consecutive
+         * samples before accepting it. This rejects short breadboard/opto
+         * glitches that would otherwise look like impossible quadrature
+         * transitions and explode the count.
+         */
+        if (curr_ab != pending_ab) {
+            pending_ab = curr_ab;
+            pending_same = 1u;
+            continue;
+        }
+
+        if (pending_same < STABLE_SAMPLES) {
+            pending_same++;
+            continue;
+        }
+
+        if (curr_ab == prev_ab) {
+            continue;
+        }
+
         /* 4X quadrature decode via lookup – one cycle, no branches */
         count += QEM[(prev_ab << 2u) | curr_ab];
 
@@ -139,6 +166,7 @@ void main(void) {
          * torn read.
          */
         DRAM_COUNT = count;
+        DRAM_RSVD  = ((uint32_t)count) ^ COUNT_COOKIE;
 
         prev_ab = curr_ab;
     }

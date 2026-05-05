@@ -2355,30 +2355,31 @@ class StationParamsWidget(QFrame):
 
         # Compact field list — each row is label + tappable value button
         _FIELD_SS_LABEL = (
-            "color:#5B6575; font-size:8pt; font-weight:600;"
+            "color:#5B6575; font-size:8.5pt; font-weight:600;"
             " background:transparent; border:none;")
         _FIELD_BTN_EMPTY = (
             "QPushButton { background:#F8FAFB; border:1px solid #C8D0DA; border-radius:6px;"
-            " padding:0 8px; color:#94A3B8; font-size:9pt; text-align:left; }"
+            " padding:0 10px; color:#94A3B8; font-size:10pt; text-align:left; }"
             "QPushButton:hover { background:#FFFFFF; border-color:#1565C0; }"
             "QPushButton:pressed { background:#EAF3FF; }")
         _FIELD_BTN_FILLED = (
             "QPushButton { background:#F8FAFB; border:1px solid #C8D0DA; border-radius:6px;"
-            " padding:0 8px; color:#1A2332; font-size:9pt; text-align:left; }"
+            " padding:0 10px; color:#1A2332; font-size:10pt; text-align:left; }"
             "QPushButton:hover { background:#FFFFFF; border-color:#1565C0; }"
             "QPushButton:pressed { background:#EAF3FF; }")
 
         for name in self._field_names:
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(6)
+            row.setSpacing(8)
 
             lbl = QLabel(name)
             lbl.setStyleSheet(_FIELD_SS_LABEL)
-            lbl.setFixedWidth(100)
+            lbl.setFixedWidth(135)
+            lbl.setWordWrap(True)
 
             field = TouchTextField(f"Tap to enter", field_title=name)
-            field.setFixedHeight(32)
+            field.setFixedHeight(38)
             self._fields[name] = field
 
             row.addWidget(lbl)
@@ -2400,12 +2401,13 @@ class StationParamsWidget(QFrame):
         for name, placeholder in [("Name", "Official name"), ("Designation", "Designation")]:
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(6)
+            row.setSpacing(8)
             lbl = QLabel(name)
             lbl.setStyleSheet(_FIELD_SS_LABEL)
-            lbl.setFixedWidth(100)
+            lbl.setFixedWidth(135)
+            lbl.setWordWrap(True)
             field = TouchTextField(placeholder, field_title=name)
-            field.setFixedHeight(32)
+            field.setFixedHeight(38)
             self._fields[name] = field
             row.addWidget(lbl)
             row.addWidget(field, 1)

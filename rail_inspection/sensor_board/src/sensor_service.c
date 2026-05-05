@@ -35,6 +35,8 @@
 #define PRU_MAP_SIZE         4096u
 #define ENCODER_DEFAULT_PPR  400.0
 #define ENCODER_DEFAULT_WHEEL_DIAMETER_MM 250.0
+#define ENCODER_COUNT_COOKIE 0xA5A5A5A5u
+#define ENCODER_MAX_DELTA_DEFAULT 32
 
 static volatile sig_atomic_t g_run = 1;
 
@@ -48,8 +50,14 @@ typedef struct {
     volatile int32_t *count;
     volatile uint32_t *status;
     volatile uint32_t *sample_us;
+    volatile uint32_t *count_check;
     double mm_per_count;
     int invert;
+    int max_delta;
+    int have_last_count;
+    int32_t last_count;
+    int have_zero_count;
+    int32_t zero_count;
 } EncoderPRU;
 
 static EncoderPRU g_enc = {
@@ -60,6 +68,11 @@ static EncoderPRU g_enc = {
     .sample_us = NULL,
     .mm_per_count = 0.0,
     .invert = 0,
+    .max_delta = ENCODER_MAX_DELTA_DEFAULT,
+    .have_last_count = 0,
+    .last_count = 0,
+    .have_zero_count = 0,
+    .zero_count = 0,
 };
 
 typedef struct { float cl_mm; float ch_m; } CLSample;
@@ -178,6 +191,8 @@ static int encoder_open(EncoderPRU *enc) {
     wheel_diameter_mm = env_double("RAIL_WHEEL_DIAMETER_MM", ENCODER_DEFAULT_WHEEL_DIAMETER_MM);
     counts_per_rev = ppr * 4.0;
     enc->invert = env_int("RAIL_ENCODER_INVERT", 0) ? 1 : 0;
+    enc->max_delta = env_int("RAIL_ENCODER_MAX_DELTA", ENCODER_MAX_DELTA_DEFAULT);
+    if (enc->max_delta < 0) enc->max_delta = ENCODER_MAX_DELTA_DEFAULT;
     enc->mm_per_count = (M_PI * wheel_diameter_mm) / counts_per_rev;
 
     enc->mem_fd = open("/dev/mem", O_RDONLY | O_SYNC);
@@ -200,10 +215,11 @@ static int encoder_open(EncoderPRU *enc) {
     enc->count = (volatile int32_t *)(enc->map + offset + 0x00u);
     enc->status = (volatile uint32_t *)(enc->map + offset + 0x04u);
     enc->sample_us = (volatile uint32_t *)(enc->map + offset + 0x08u);
+    enc->count_check = (volatile uint32_t *)(enc->map + offset + 0x0Cu);
 
     printf("[ENC] PRU quadrature input enabled: P9_27=A, P9_30=B\n");
-    printf("[ENC] Geometry: ppr=%.0f counts_per_rev=%.0f wheel_diameter_mm=%.2f mm_per_count=%.6f invert=%d\n",
-           ppr, counts_per_rev, wheel_diameter_mm, enc->mm_per_count, enc->invert);
+    printf("[ENC] Geometry: ppr=%.0f counts_per_rev=%.0f wheel_diameter_mm=%.2f mm_per_count=%.6f invert=%d max_delta=%d\n",
+           ppr, counts_per_rev, wheel_diameter_mm, enc->mm_per_count, enc->invert, enc->max_delta);
     return 0;
 }
 
@@ -220,20 +236,48 @@ static void encoder_close(EncoderPRU *enc) {
     enc->count = NULL;
     enc->status = NULL;
     enc->sample_us = NULL;
+    enc->count_check = NULL;
+    enc->have_last_count = 0;
+    enc->last_count = 0;
+    enc->have_zero_count = 0;
+    enc->zero_count = 0;
 }
 
 static int encoder_read(EncoderPRU *enc, int32_t *count_out, float *chainage_m_out, uint32_t *sample_us_out) {
     int32_t count;
     uint32_t status;
     uint32_t sample_us;
-    if (!enc || !enc->count || !enc->status || !enc->sample_us) return -1;
+    uint32_t count_check;
+    int attempt;
+    if (!enc || !enc->count || !enc->status || !enc->sample_us || !enc->count_check) return -1;
 
-    count = *enc->count;
-    status = *enc->status;
-    sample_us = *enc->sample_us;
+    for (attempt = 0; attempt < 8; ++attempt) {
+        count = *enc->count;
+        status = *enc->status;
+        sample_us = *enc->sample_us;
+        count_check = *enc->count_check;
+        if ((((uint32_t)count) ^ ENCODER_COUNT_COOKIE) == count_check) {
+            break;
+        }
+    }
+
+    if ((((uint32_t)count) ^ ENCODER_COUNT_COOKIE) != count_check) return -1;
     if (status != 1u) return -1;
 
     if (enc->invert) count = -count;
+    if (!enc->have_zero_count) {
+        enc->zero_count = count;
+        enc->have_zero_count = 1;
+    }
+    count -= enc->zero_count;
+    if (enc->have_last_count && enc->max_delta > 0) {
+        int32_t delta = count - enc->last_count;
+        if (delta > enc->max_delta || delta < -enc->max_delta) {
+            count = enc->last_count;
+        }
+    }
+    enc->last_count = count;
+    enc->have_last_count = 1;
     if (count_out) *count_out = count;
     if (chainage_m_out) *chainage_m_out = (float)((count * enc->mm_per_count) / 1000.0);
     if (sample_us_out) *sample_us_out = sample_us;
