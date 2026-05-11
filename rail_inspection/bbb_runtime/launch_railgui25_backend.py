@@ -28,6 +28,7 @@ CSV_FLUSH_ROWS = 50
 UI_REFRESH_MS = 100
 DEFAULT_CLOUD_ROOT = "https://thread-qm2o.onrender.com"
 CLOUD_RETRIES = 3
+GAUGE_NOMINAL_MM = 1676.0
 LOG_DIR = RUNTIME_DIR / "logs"
 STATUS_FILE = LOG_DIR / "cloud_status.json"
 QUEUE_FILE = LOG_DIR / "cloud_queue.json"
@@ -186,7 +187,7 @@ class SharedMemorySensorThread(gui_app.SensorThread):
         self._stop = False
         self._bridge = SharedMemoryBridge(cfg)
         self._last_fault = ""
-        self._needs_zero = True
+        self._needs_zero = False
 
     def stop(self):
         self._stop = True
@@ -195,7 +196,7 @@ class SharedMemorySensorThread(gui_app.SensorThread):
     def reset(self):
         super().reset()
         self._bridge.reset_display_reference()
-        self._needs_zero = True
+        self._needs_zero = False
 
     def _emit_fault(self, message: str) -> None:
         if message != self._last_fault:
@@ -544,7 +545,7 @@ def optimized_metric_refresh(self, val):
         return
 
     warn, alarm = gui_app._THRESH.get(self.key, (None, None))
-    dev = (abs(float(val) - 1435.0) if self.key == "gauge" else abs(float(val)))
+    dev = (abs(float(val) - GAUGE_NOMINAL_MM) if self.key == "gauge" else abs(float(val)))
     if alarm is not None and dev >= alarm:
         state = ("alarm", gui_app.RED, "ALARM", "QFrame#Card{background:#FFEBEE; border:1px solid #DDE3EA; border-left:4px solid " + gui_app.RED + "; border-radius:10px;}", "⚠  ALARM")
     elif warn is not None and dev >= warn:
@@ -1068,6 +1069,27 @@ def optimized_on_toggle(self, running):
         self.logger.start(self.cfg["csv_dir"], self.cfg.get("hl_sec", 30))
         _apply_station_reference(self)
     else:
+        self.sensor.reset()
+        latest = getattr(self, "_latest_sensor_data", None) or {}
+        zero_sample = {
+            "gauge": latest.get("gauge", 0.0),
+            "cross": latest.get("cross", 0.0),
+            "twist": 0.0,
+            "dist": 0.0,
+            "lat": 0.0,
+            "lon": 0.0,
+            "speed": 0.0,
+            "scl_ok": latest.get("scl_ok", False),
+            "encoder_ok": latest.get("encoder_ok", False),
+            "raw_cross_mm": latest.get("raw_cross_mm", latest.get("cross", 0.0)),
+            "raw_twist_mm_m": 0.0,
+            "raw_gauge_mm": latest.get("raw_gauge_mm", latest.get("gauge", 0.0)),
+            "raw_dist_m": latest.get("raw_dist_m", 0.0),
+            "ts": latest.get("ts", 0),
+        }
+        self._latest_sensor_data = zero_sample
+        self._rendered_sensor_data = None
+        self.dash.update_data(zero_sample)
         saved_path = self.logger.stop()
         self.dash.set_session(self.logger.count, False, saved_path or "")
         _push_csv_to_cloud(self, saved_path, wait=False)

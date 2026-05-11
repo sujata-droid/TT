@@ -43,8 +43,17 @@
  *                    = 1676 * (raw / sensitivity_lsb_g)  [for BG rail]
  *
  * TWIST FORMULA
- *   twist (mm/m) = delta_cross_level_mm / delta_chainage_m
- *   Computed over a rolling 3-metre baseline.
+ *   twist (mm/m) = (C1 - C2) / L
+ *   where:
+ *     C1 = current cross-level in mm
+ *     C2 = cross-level measured L metres earlier on the sampling grid
+ *     L  = fixed reference baseline in metres
+ *   Project reference supports:
+ *     - sampling distance of 0.25 m or multiples of 0.25 m
+ *     - twist base length selectable from 2 m to 4 m
+ *   Default implementation uses:
+ *     sample interval = 0.25 m
+ *     base length     = 3.0 m
  *
  * SPI WIRING TO BBB
  * -----------------
@@ -100,7 +109,8 @@
 /* Physical constants */
 #define SCL3300_SENSITIVITY   SCL3300_MODE_SENS_LSB_G
 #define GAUGE_MM              1676.0f   /* Indian BG rail gauge (mm)    */
-#define TWIST_BASELINE_M      3.0f      /* Twist computation baseline   */
+#define TWIST_SAMPLE_STEP_M   0.25f     /* Default sampling step (m)    */
+#define TWIST_BASELINE_M      3.0f      /* Default twist baseline (m)   */
 
 /* Timing (ms / us) */
 #define SCL3300_STARTUP_MS    100

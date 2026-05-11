@@ -9,6 +9,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <math.h>
 #include <pthread.h>
 #include <sched.h>
@@ -26,8 +27,10 @@
 #include "scl3300.h"
 #include "shared_frame.h"
 
-#define ACQUISITION_HZ       50
+#define ACQUISITION_HZ       100
 #define ACQUISITION_NS       (1000000000L / ACQUISITION_HZ)
+#define SCL3300_READ_HZ      10
+#define SCL3300_READ_DIV     (ACQUISITION_HZ / SCL3300_READ_HZ)
 #define TWIST_HISTORY_MAX    200
 #define STATUS_CHECK_SECS    5
 #define CL_FILTER_TAPS       8
@@ -36,13 +39,41 @@
 #define ENCODER_DEFAULT_PPR  400.0
 #define ENCODER_DEFAULT_WHEEL_DIAMETER_MM 250.0
 #define ENCODER_COUNT_COOKIE 0xA5A5A5A5u
-#define ENCODER_MAX_DELTA_DEFAULT 32
+#define ENCODER_MAX_DELTA_DEFAULT 0
+#define ADC_PATH_DEFAULT "/sys/bus/iio/devices/iio:device0/in_voltage0_raw"
+#define GAUGE_ZERO_DEFAULT 2048.0
+#define GAUGE_MPC_DEFAULT  0.0684
+#define GAUGE_FACTOR_DEFAULT 1.0
+#define GAUGE_MIN_MM_DEFAULT (GAUGE_MM - 25.0)
+#define GAUGE_MAX_MM_DEFAULT (GAUGE_MM + 50.0)
+#define TWIST_SAMPLE_STEP_DEFAULT TWIST_SAMPLE_STEP_M
+#define TWIST_BASELINE_DEFAULT    TWIST_BASELINE_M
 
 static volatile sig_atomic_t g_run = 1;
 
 static int g_shm_fd = -1;
 static RailSharedFrame *g_frame = NULL;
 static SCL3300 g_scl;
+
+typedef struct {
+    char path[256];
+    double zero_raw;
+    double mm_per_count;
+    double factor;
+    double min_mm;
+    double max_mm;
+    int healthy;
+} GaugeADC;
+
+static GaugeADC g_gauge = {
+    .path = ADC_PATH_DEFAULT,
+    .zero_raw = GAUGE_ZERO_DEFAULT,
+    .mm_per_count = GAUGE_MPC_DEFAULT,
+    .factor = GAUGE_FACTOR_DEFAULT,
+    .min_mm = GAUGE_MIN_MM_DEFAULT,
+    .max_mm = GAUGE_MAX_MM_DEFAULT,
+    .healthy = 0,
+};
 
 typedef struct {
     int mem_fd;
@@ -78,9 +109,15 @@ static EncoderPRU g_enc = {
 typedef struct { float cl_mm; float ch_m; } CLSample;
 static CLSample g_hist[TWIST_HISTORY_MAX];
 static uint32_t g_hist_head = 0;
+static int32_t g_hist_step_idx[TWIST_HISTORY_MAX];
 static float g_cl_hist[CL_FILTER_TAPS];
 static uint32_t g_cl_hist_head = 0;
 static uint32_t g_cl_hist_count = 0;
+static float g_twist_sample_step_m = TWIST_SAMPLE_STEP_DEFAULT;
+static float g_twist_baseline_m = TWIST_BASELINE_DEFAULT;
+static int32_t g_twist_baseline_steps = 0;
+static int g_twist_anchor_valid = 0;
+static int32_t g_twist_anchor_step = 0;
 
 static void on_signal(int s) { (void)s; g_run = 0; }
 
@@ -129,6 +166,93 @@ static int env_int(const char *name, int fallback) {
         return fallback;
     }
     return (int)value;
+}
+
+static void gauge_init(void) {
+    const char *raw_path = getenv("RAIL_ADC_PATH");
+    if (raw_path && *raw_path) {
+        snprintf(g_gauge.path, sizeof(g_gauge.path), "%s", raw_path);
+    }
+    g_gauge.zero_raw = env_double("RAIL_GAUGE_ZERO_RAW", GAUGE_ZERO_DEFAULT);
+    g_gauge.mm_per_count = env_double("RAIL_GAUGE_MPC", GAUGE_MPC_DEFAULT);
+    g_gauge.factor = env_double("RAIL_GAUGE_FACTOR", GAUGE_FACTOR_DEFAULT);
+    g_gauge.min_mm = env_double("RAIL_GAUGE_MIN_MM", GAUGE_MIN_MM_DEFAULT);
+    g_gauge.max_mm = env_double("RAIL_GAUGE_MAX_MM", GAUGE_MAX_MM_DEFAULT);
+    if (g_gauge.min_mm > g_gauge.max_mm) {
+        double tmp = g_gauge.min_mm;
+        g_gauge.min_mm = g_gauge.max_mm;
+        g_gauge.max_mm = tmp;
+    }
+    printf("[GAUGE] path=%s zero=%.2f mpc=%.6f factor=%.3f nominal=%.1f range=[%.1f, %.1f]\n",
+           g_gauge.path, g_gauge.zero_raw, g_gauge.mm_per_count, g_gauge.factor,
+           (double)GAUGE_MM, g_gauge.min_mm, g_gauge.max_mm);
+}
+
+static int gauge_read_raw(const GaugeADC *gauge, int *raw_out) {
+    FILE *fp;
+    int raw;
+    if (!gauge || !raw_out) return -1;
+    fp = fopen(gauge->path, "r");
+    if (!fp) return -1;
+    if (fscanf(fp, "%d", &raw) != 1) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    *raw_out = raw;
+    return 0;
+}
+
+static int gauge_read_mm(GaugeADC *gauge, float *gauge_mm_out) {
+    int raw;
+    double gauge_mm;
+    if (!gauge || !gauge_mm_out) return -1;
+    if (gauge_read_raw(gauge, &raw) != 0) {
+        gauge->healthy = 0;
+        return -1;
+    }
+    gauge->healthy = 1;
+    gauge_mm = GAUGE_MM + ((double)raw - gauge->zero_raw) * gauge->mm_per_count * gauge->factor;
+    if (gauge_mm < gauge->min_mm) gauge_mm = gauge->min_mm;
+    if (gauge_mm > gauge->max_mm) gauge_mm = gauge->max_mm;
+    *gauge_mm_out = (float)gauge_mm;
+    return 0;
+}
+
+static float normalize_sampling_step(float value) {
+    float steps;
+    float snapped;
+    if (!isfinite(value) || value <= 0.0f) return TWIST_SAMPLE_STEP_DEFAULT;
+    steps = value / 0.25f;
+    snapped = roundf(steps) * 0.25f;
+    if (snapped < 0.25f) snapped = 0.25f;
+    return snapped;
+}
+
+static float normalize_twist_baseline(float value) {
+    float steps;
+    float snapped;
+    if (!isfinite(value) || value <= 0.0f) return TWIST_BASELINE_DEFAULT;
+    if (value < 2.0f) value = 2.0f;
+    if (value > 4.0f) value = 4.0f;
+    steps = value / 0.25f;
+    snapped = roundf(steps) * 0.25f;
+    if (snapped < 2.0f) snapped = 2.0f;
+    if (snapped > 4.0f) snapped = 4.0f;
+    return snapped;
+}
+
+static void twist_config_init(void) {
+    float sample_step = (float)env_double("RAIL_SAMPLING_DISTANCE_M", TWIST_SAMPLE_STEP_DEFAULT);
+    float baseline = (float)env_double("RAIL_TWIST_BASE_M", TWIST_BASELINE_DEFAULT);
+
+    g_twist_sample_step_m = normalize_sampling_step(sample_step);
+    g_twist_baseline_m = normalize_twist_baseline(baseline);
+    g_twist_baseline_steps = (int32_t)lroundf(g_twist_baseline_m / g_twist_sample_step_m);
+    if (g_twist_baseline_steps < 1) g_twist_baseline_steps = 1;
+
+    printf("[TWIST] sample_step=%.2f m baseline=%.2f m baseline_steps=%d\n",
+           (double)g_twist_sample_step_m, (double)g_twist_baseline_m, g_twist_baseline_steps);
 }
 
 static void ensure_spi_pinmux(void) {
@@ -286,33 +410,66 @@ static int encoder_read(EncoderPRU *enc, int32_t *count_out, float *chainage_m_o
 
 static float compute_twist(float cl_mm, float ch_m) {
     uint32_t idx = g_hist_head % TWIST_HISTORY_MAX;
-    g_hist[idx].cl_mm = cl_mm;
-    g_hist[idx].ch_m = ch_m;
-    g_hist_head++;
+    int32_t current_step_index;
+    int32_t relative_step;
+    int32_t abs_relative_step;
+    int32_t direction;
+    int32_t target_step;
+
+    if (g_twist_sample_step_m <= 0.0f || g_twist_baseline_steps < 1) return 0.0f;
+
+    current_step_index = (int32_t)lroundf(ch_m / g_twist_sample_step_m);
+    if (!g_twist_anchor_valid) {
+        g_twist_anchor_step = current_step_index;
+        g_twist_anchor_valid = 1;
+    }
+    if (g_hist_head > 0) {
+        uint32_t last_idx = (g_hist_head - 1u) % TWIST_HISTORY_MAX;
+        if (g_hist_step_idx[last_idx] == current_step_index) {
+            g_hist[last_idx].cl_mm = cl_mm;
+            g_hist[last_idx].ch_m = ch_m;
+        } else {
+            g_hist[idx].cl_mm = cl_mm;
+            g_hist[idx].ch_m = ch_m;
+            g_hist_step_idx[idx] = current_step_index;
+            g_hist_head++;
+        }
+    } else {
+        g_hist[idx].cl_mm = cl_mm;
+        g_hist[idx].ch_m = ch_m;
+        g_hist_step_idx[idx] = current_step_index;
+        g_hist_head++;
+    }
     if (g_hist_head < 2) return 0.0f;
+    relative_step = current_step_index - g_twist_anchor_step;
+    abs_relative_step = abs(relative_step);
+    if (abs_relative_step < g_twist_baseline_steps) return 0.0f;
+    if ((abs_relative_step % g_twist_baseline_steps) != 0) return 0.0f;
+    direction = (relative_step >= 0) ? 1 : -1;
+    target_step = current_step_index - (direction * g_twist_baseline_steps);
 
     {
-        float target_ch = ch_m - TWIST_BASELINE_M;
-        float best_err = 1e9f;
         uint32_t best = 0;
         bool found = false;
         uint32_t n = (g_hist_head < TWIST_HISTORY_MAX) ? g_hist_head : TWIST_HISTORY_MAX;
         uint32_t i;
+
         for (i = 1; i < n; i++) {
             uint32_t j = (g_hist_head - 1u - i) % TWIST_HISTORY_MAX;
-            float err = fabsf(g_hist[j].ch_m - target_ch);
-            if (err < best_err) {
-                best_err = err;
+            if (g_hist_step_idx[j] == target_step) {
                 best = j;
                 found = true;
+                break;
             }
         }
-        if (!found || best_err > TWIST_BASELINE_M * 0.6f) return 0.0f;
+        if (!found) return 0.0f;
         {
             float dcl = cl_mm - g_hist[best].cl_mm;
-            float dch = ch_m - g_hist[best].ch_m;
-            if (fabsf(dch) < 0.001f) return 0.0f;
-            return dcl / dch;
+            /* Use the fixed project chord length:
+             * twist = (C1 - C2) / L
+             * where L is the selected twist baseline.
+             */
+            return dcl / g_twist_baseline_m;
         }
     }
 }
@@ -395,8 +552,12 @@ int main(void) {
     int enc_ok_init;
     bool first = true;
     float last_cl = 0.0f;
+    float last_gauge_mm = GAUGE_MM;
+    uint8_t last_scl_status = 0u;
     int hc_cnt = 0;
     int hc_intval = ACQUISITION_HZ * STATUS_CHECK_SECS;
+    int scl_read_div = SCL3300_READ_DIV > 0 ? SCL3300_READ_DIV : 1;
+    int scl_read_cnt = 0;
     struct timespec next;
 
     if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
@@ -416,11 +577,13 @@ int main(void) {
     signal(SIGTERM, on_signal);
 
     if (shm_init() != 0) return 1;
+    twist_config_init();
+    gauge_init();
     ensure_spi_pinmux();
     ensure_encoder_pinmux();
 
     printf("=== Rail Inspection Sensor Service (shared memory) ===\n");
-    printf("Gauge: %.0f mm | encoder via PRU0 | %d Hz\n",
+    printf("Gauge: live ADC around %.0f mm | encoder via PRU0 | %d Hz\n",
            (double)GAUGE_MM, ACQUISITION_HZ);
     printf("[SHM] Publishing latest frame at %s\n", RAIL_SHM_PATH);
 
@@ -438,7 +601,8 @@ int main(void) {
 
     while (g_run) {
         float cl_mm = last_cl;
-        uint8_t scl_status = 0;
+        float gauge_mm = last_gauge_mm;
+        uint8_t scl_status = last_scl_status;
         float chainage_m = 0.0f;
         int32_t encoder_count = 0;
         uint8_t encoder_status = 0;
@@ -448,17 +612,26 @@ int main(void) {
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
         ts_add_ns(&next, ACQUISITION_NS);
 
-        if (g_scl.initialized) {
+        if (g_scl.initialized && (++scl_read_cnt >= scl_read_div)) {
             float tmp;
+            scl_read_cnt = 0;
             if (scl3300_read_cross_level(&g_scl, &tmp) == 0) {
                 cl_mm = tmp;
                 last_cl = tmp;
                 scl_status = 1u;
+                last_scl_status = 1u;
+            } else {
+                scl_status = 0u;
+                last_scl_status = 0u;
             }
         }
 
         if (encoder_read(&g_enc, &encoder_count, &chainage_m, &encoder_sample_us) == 0) {
             encoder_status = 1u;
+        }
+
+        if (gauge_read_mm(&g_gauge, &gauge_mm) == 0) {
+            last_gauge_mm = gauge_mm;
         }
 
         cl_mm = filter_cross_level(cl_mm);
@@ -468,13 +641,18 @@ int main(void) {
 
         if (++hc_cnt >= hc_intval) {
             hc_cnt = 0;
-            if (g_scl.initialized) {
-                scl3300_health_check(&g_scl);
-            }
+            /*
+             * Do not send extra READ_STATUS frames while the acquisition loop is
+             * running. The SCL3300 response is pipelined, and interleaving a
+             * health-check command stream with ACC_X reads can leave subsequent
+             * samples with RS=0x03 even though the sensor initialized correctly.
+             * Live health is tracked from the normal ACC_X read result above.
+             */
             if (enc_ok_init) {
                 printf("[ENC] count=%d chainage_m=%.5f sample_us=%u status=%u\n",
                        encoder_count, (double)chainage_m, encoder_sample_us, encoder_status);
             }
+            printf("[GAUGE] mm=%.2f adc_ok=%d\n", (double)gauge_mm, g_gauge.healthy);
         }
 
         shm_publish(
@@ -482,7 +660,7 @@ int main(void) {
             (double)cl_mm,
             (double)twist,
             (double)chainage_m,
-            (double)GAUGE_MM,
+            (double)gauge_mm,
             encoder_count,
             scl_status,
             encoder_status
