@@ -554,6 +554,7 @@ int main(void) {
     float last_cl = 0.0f;
     float last_gauge_mm = GAUGE_MM;
     uint8_t last_scl_status = 0u;
+    int scl_miss_count = 0;
     int hc_cnt = 0;
     int hc_intval = ACQUISITION_HZ * STATUS_CHECK_SECS;
     int scl_read_div = SCL3300_READ_DIV > 0 ? SCL3300_READ_DIV : 1;
@@ -620,9 +621,23 @@ int main(void) {
                 last_cl = tmp;
                 scl_status = 1u;
                 last_scl_status = 1u;
+                scl_miss_count = 0;
             } else {
-                scl_status = 0u;
-                last_scl_status = 0u;
+                /*
+                 * A single missed SCL3300 frame should not make the UI drop the
+                 * cross-level card to "not ready". Keep the last-good value and
+                 * only mark the inclinometer unhealthy after repeated failures.
+                 */
+                if (++scl_miss_count >= SCL3300_MAX_CRC_ERRORS) {
+                    scl_status = 0u;
+                    last_scl_status = 0u;
+                    fprintf(stderr, "[SCL3300] read stalled; reinitializing SPI link\n");
+                    scl3300_close(&g_scl);
+                    if (scl3300_open(&g_scl) == 0) {
+                        scl_miss_count = 0;
+                        last_scl_status = g_scl.healthy ? 1u : 0u;
+                    }
+                }
             }
         }
 
@@ -652,6 +667,8 @@ int main(void) {
                 printf("[ENC] count=%d chainage_m=%.5f sample_us=%u status=%u\n",
                        encoder_count, (double)chainage_m, encoder_sample_us, encoder_status);
             }
+            printf("[SCL3300] cross_level_mm=%.2f status=%u\n",
+                   (double)cl_mm, scl_status);
             printf("[GAUGE] mm=%.2f adc_ok=%d\n", (double)gauge_mm, g_gauge.healthy);
         }
 

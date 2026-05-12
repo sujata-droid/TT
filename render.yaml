@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: thread-qm2o
+    name: render-cloud-api
     runtime: python
     rootDir: rail_inspection/cloud
     buildCommand: pip install -r requirements.txt

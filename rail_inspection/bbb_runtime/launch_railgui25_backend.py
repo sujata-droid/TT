@@ -26,7 +26,7 @@ from backend_bridge import SharedMemoryBridge, format_diag
 
 CSV_FLUSH_ROWS = 50
 UI_REFRESH_MS = 100
-DEFAULT_CLOUD_ROOT = "https://thread-qm2o.onrender.com"
+DEFAULT_CLOUD_ROOT = "https://render-cloud-api.onrender.com/api/survey"
 CLOUD_RETRIES = 3
 GAUGE_NOMINAL_MM = 1676.0
 LOG_DIR = RUNTIME_DIR / "logs"
