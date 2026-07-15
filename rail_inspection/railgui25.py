@@ -191,8 +191,9 @@ QPushButton#SB:checked { border-color: #1B8A4C88; color: #1B8A4C; }
 #  CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 CFG_PATH  = Path(__file__).parent / "rail_config.json"
+DEFAULT_CSV_DIR = os.environ.get("RAIL_CSV_DIR", "/home/debian/surveys")
 _DEF = {
-    "csv_dir":   str(Path.home() / "surveys"),
+    "csv_dir":   DEFAULT_CSV_DIR,
     "hl_sec":    30,
     "server":    "8.8.8.8",
     "lte_iface": "eth1",
@@ -212,6 +213,8 @@ def load_cfg():
                 if isinstance(v, dict):
                     for kk, vv in v.items():
                         d[k].setdefault(kk, vv)
+            if os.environ.get("RAIL_CSV_DIR"):
+                d["csv_dir"] = os.environ["RAIL_CSV_DIR"]
             return d
         except Exception:
             pass
@@ -230,7 +233,7 @@ def save_cfg(cfg):
 # ─────────────────────────────────────────────────────────────────────────────
 EQEP_PATH = ("/sys/devices/platform/ocp/48304000.epwmss"
              "/48304180.eqep/counter/count0/count")
-ADC_PATH  = "/sys/bus/iio/devices/iio:device0/in_voltage0_raw"
+ADC_PATH  = os.environ.get("RAIL_ADC_PATH", "/sys/bus/iio/devices/iio:device0/in_voltage0_raw")
 SPI_DEV   = "/dev/spidev1.0"
 HW_SIM    = not os.path.exists(EQEP_PATH)
 
@@ -960,7 +963,43 @@ class SensorThread(QThread):
         self._dist += delta * self.cfg["encoder"]["scale"] * enc_factor / 1000.0
         self.motion.emit(delta != 0)
         raw   = int(_sysfs(ADC_PATH, str(self.cfg["adc"]["zero"])))
-        gauge = 1435.0 + (raw - self.cfg["adc"]["zero"]) * self.cfg["adc"]["mpc"] * adc_factor
+        
+        gauge_source = os.environ.get("RAIL_GAUGE_SOURCE", "laser_adc")
+        if gauge_source in ("laser", "laser_adc", "hg-c1200", "hgc1200"):
+            laser_min_mm = float(os.environ.get("RAIL_LASER_MIN_MM", 160.0))
+            laser_max_mm = float(os.environ.get("RAIL_LASER_MAX_MM", 0.0))
+            laser_zero_mm = float(os.environ.get("RAIL_LASER_ZERO_MM", 80.0))
+            laser_zero_raw = float(os.environ.get("RAIL_LASER_ZERO_RAW", -1.0))
+            adc_max_raw = float(os.environ.get("RAIL_ADC_MAX_RAW", 3072.0))
+            laser_auto_zero = int(os.environ.get("RAIL_LASER_AUTO_ZERO", 1)) != 0
+            
+            if laser_auto_zero and (not hasattr(self, "_laser_zero_raw") or self._laser_zero_raw < 15.0):
+                if raw >= 15:
+                    self._laser_zero_raw = float(raw)
+                
+            has_ref = (hasattr(self, "_laser_zero_raw") and self._laser_zero_raw >= 0.0) or laser_zero_raw >= 0.0
+            if not has_ref or raw < 15 or raw > 3060:
+                gauge = 0.0
+            else:
+                if hasattr(self, "_laser_zero_raw") and self._laser_zero_raw >= 0.0:
+                    ref_laser = laser_min_mm + (self._laser_zero_raw / adc_max_raw) * (laser_max_mm - laser_min_mm)
+                else:
+                    ref_laser = laser_min_mm + (laser_zero_raw / adc_max_raw) * (laser_max_mm - laser_min_mm)
+                
+                ratio = float(raw) / adc_max_raw
+                ratio = max(0.0, min(1.0, ratio))
+                curr_laser = laser_min_mm + ratio * (laser_max_mm - laser_min_mm)
+                curr_laser = max(0.0, min(160.0, curr_laser))
+                
+                output_mode = os.environ.get("RAIL_GAUGE_OUTPUT_MODE", "absolute")
+                if output_mode == "absolute":
+                    gauge = curr_laser * adc_factor
+                    gauge = max(0.0, min(160.0, gauge))
+                else:
+                    gauge = (ref_laser - curr_laser) * adc_factor
+        else:
+            gauge = 1435.0 + (raw - self.cfg["adc"]["zero"]) * self.cfg["adc"]["mpc"] * adc_factor
+
         cross = self._spi()
         twist = round(abs(cross) * 0.65 + random.gauss(0, 0.015), 2)
         return {"gauge": round(gauge, 1), "cross": round(cross, 2),
@@ -989,7 +1028,16 @@ class SensorThread(QThread):
         self._dist += 0.2 * enc_factor
         self.motion.emit(True)
         cross = round(random.gauss(0, 0.25) * incl_factor, 2)
-        return {"gauge": round(1435.0 + random.gauss(0, 0.12) * adc_factor, 1),
+        
+        gauge_source = os.environ.get("RAIL_GAUGE_SOURCE", "laser_adc")
+        if gauge_source in ("laser", "laser_adc", "hg-c1200", "hgc1200"):
+            ref_laser = 81.6
+            curr_laser = 81.6 + random.gauss(0, 0.12) * adc_factor
+            gauge = ref_laser - curr_laser
+        else:
+            gauge = 1435.0 + random.gauss(0, 0.12) * adc_factor
+            
+        return {"gauge": round(gauge, 1),
                 "cross": cross,
                 "twist": round(abs(cross) * 0.65 + random.gauss(0, 0.015), 2),
                 "dist":  round(self._dist, 1),
@@ -1019,6 +1067,8 @@ class NetThread(QThread):
     def _lte(self):
         iface = self.cfg.get("lte_iface", "eth1")
         if _sysfs(f"/sys/class/net/{iface}/operstate", "down") == "up": return 3
+        if _sysfs("/sys/class/net/usb2/operstate",     "down") == "up": return 3
+        if _sysfs("/sys/class/net/eth1/operstate",     "down") == "up": return 3
         if _sysfs("/sys/class/net/eth0/operstate",     "down") == "up": return 2
         return 0 if not HW_SIM else 3
 
@@ -1566,8 +1616,7 @@ class MetricCard(QFrame):
     def refresh(self, val):
         self._val.setText(str(val))
         warn, alarm = _THRESH.get(self.key, (None, None))
-        dev = (abs(float(val) - 1435.0) if self.key == "gauge"
-               else abs(float(val)))
+        dev = abs(float(val))
         if alarm is not None and dev >= alarm:
             vc  = RED
             bg  = (f"QFrame#Card{{background:#FFEBEE; border:1px solid #DDE3EA;"
@@ -2502,7 +2551,7 @@ class CSVViewerPage(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._csv_dir = str(Path.home() / "surveys")
+        self._csv_dir = DEFAULT_CSV_DIR
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)

@@ -46,6 +46,11 @@
 #define GAUGE_FACTOR_DEFAULT 1.0
 #define GAUGE_MIN_MM_DEFAULT (GAUGE_MM - 25.0)
 #define GAUGE_MAX_MM_DEFAULT (GAUGE_MM + 50.0)
+#define GAUGE_ADC_MAX_RAW_DEFAULT 3072.0
+#define LASER_MIN_MM_DEFAULT 160.0
+#define LASER_MAX_MM_DEFAULT 0.0
+#define LASER_ZERO_MM_DEFAULT 80.0
+#define LASER_AUTO_ZERO_DEFAULT 1
 #define TWIST_SAMPLE_STEP_DEFAULT TWIST_SAMPLE_STEP_M
 #define TWIST_BASELINE_DEFAULT    TWIST_BASELINE_M
 
@@ -57,21 +62,43 @@ static SCL3300 g_scl;
 
 typedef struct {
     char path[256];
+    int source_laser_adc;
     double zero_raw;
     double mm_per_count;
     double factor;
     double min_mm;
     double max_mm;
+    double adc_max_raw;
+    double laser_min_mm;
+    double laser_max_mm;
+    double laser_zero_mm;
+    double laser_zero_raw;
+    double laser_mm_per_count;
+    int laser_sign;
+    int laser_auto_zero;
+    int gauge_output_deviation;
+    double last_laser_mm;
     int healthy;
 } GaugeADC;
 
 static GaugeADC g_gauge = {
     .path = ADC_PATH_DEFAULT,
+    .source_laser_adc = 0,
     .zero_raw = GAUGE_ZERO_DEFAULT,
     .mm_per_count = GAUGE_MPC_DEFAULT,
     .factor = GAUGE_FACTOR_DEFAULT,
     .min_mm = GAUGE_MIN_MM_DEFAULT,
     .max_mm = GAUGE_MAX_MM_DEFAULT,
+    .adc_max_raw = GAUGE_ADC_MAX_RAW_DEFAULT,
+    .laser_min_mm = LASER_MIN_MM_DEFAULT,
+    .laser_max_mm = LASER_MAX_MM_DEFAULT,
+    .laser_zero_mm = LASER_ZERO_MM_DEFAULT,
+    .laser_zero_raw = -1.0,
+    .laser_mm_per_count = (LASER_MAX_MM_DEFAULT - LASER_MIN_MM_DEFAULT) / GAUGE_ADC_MAX_RAW_DEFAULT,
+    .laser_sign = -1,
+    .laser_auto_zero = LASER_AUTO_ZERO_DEFAULT,
+    .gauge_output_deviation = 0,
+    .last_laser_mm = LASER_ZERO_MM_DEFAULT,
     .healthy = 0,
 };
 
@@ -155,6 +182,21 @@ static double env_double(const char *name, double fallback) {
     return value;
 }
 
+static double env_double_any(const char *name, double fallback) {
+    const char *raw = getenv(name);
+    char *end = NULL;
+    double value;
+    if (!raw || !*raw) return fallback;
+    value = strtod(raw, &end);
+    if (end == raw || (end && *end != '\0') || !isfinite(value)) {
+        fprintf(stderr, "[CFG] Warning: invalid %s='%s', using %.3f\n", name, raw, fallback);
+        return fallback;
+    }
+    return value;
+}
+
+static int gauge_read_raw(const GaugeADC *gauge, int *raw_out);
+
 static int env_int(const char *name, int fallback) {
     const char *raw = getenv(name);
     char *end = NULL;
@@ -170,22 +212,67 @@ static int env_int(const char *name, int fallback) {
 
 static void gauge_init(void) {
     const char *raw_path = getenv("RAIL_ADC_PATH");
+    const char *source = getenv("RAIL_GAUGE_SOURCE");
+    const char *out_mode = getenv("RAIL_GAUGE_OUTPUT_MODE");
     if (raw_path && *raw_path) {
         snprintf(g_gauge.path, sizeof(g_gauge.path), "%s", raw_path);
     }
+    g_gauge.source_laser_adc = (source && (
+        strcmp(source, "laser") == 0 ||
+        strcmp(source, "laser_adc") == 0 ||
+        strcmp(source, "hg-c1200") == 0 ||
+        strcmp(source, "hgc1200") == 0
+    ));
     g_gauge.zero_raw = env_double("RAIL_GAUGE_ZERO_RAW", GAUGE_ZERO_DEFAULT);
     g_gauge.mm_per_count = env_double("RAIL_GAUGE_MPC", GAUGE_MPC_DEFAULT);
     g_gauge.factor = env_double("RAIL_GAUGE_FACTOR", GAUGE_FACTOR_DEFAULT);
     g_gauge.min_mm = env_double("RAIL_GAUGE_MIN_MM", GAUGE_MIN_MM_DEFAULT);
     g_gauge.max_mm = env_double("RAIL_GAUGE_MAX_MM", GAUGE_MAX_MM_DEFAULT);
+    g_gauge.adc_max_raw = env_double("RAIL_ADC_MAX_RAW", GAUGE_ADC_MAX_RAW_DEFAULT);
+    g_gauge.laser_min_mm = env_double("RAIL_LASER_MIN_MM", LASER_MIN_MM_DEFAULT);
+    g_gauge.laser_max_mm = env_double("RAIL_LASER_MAX_MM", LASER_MAX_MM_DEFAULT);
+    g_gauge.laser_zero_mm = env_double_any("RAIL_LASER_ZERO_MM", LASER_ZERO_MM_DEFAULT);
+    g_gauge.laser_zero_raw = env_double_any("RAIL_LASER_ZERO_RAW", -1.0);
+    g_gauge.laser_mm_per_count = env_double("RAIL_LASER_MPC",
+                                            (LASER_MAX_MM_DEFAULT - LASER_MIN_MM_DEFAULT) / GAUGE_ADC_MAX_RAW_DEFAULT);
+    g_gauge.laser_sign = env_int("RAIL_LASER_SIGN", -1) < 0 ? -1 : 1;
+    g_gauge.laser_auto_zero = env_int("RAIL_LASER_AUTO_ZERO", LASER_AUTO_ZERO_DEFAULT) != 0;
+    g_gauge.gauge_output_deviation = (out_mode && (strcmp(out_mode, "deviation") == 0 || strcmp(out_mode, "offset") == 0));
     if (g_gauge.min_mm > g_gauge.max_mm) {
         double tmp = g_gauge.min_mm;
         g_gauge.min_mm = g_gauge.max_mm;
         g_gauge.max_mm = tmp;
     }
-    printf("[GAUGE] path=%s zero=%.2f mpc=%.6f factor=%.3f nominal=%.1f range=[%.1f, %.1f]\n",
-           g_gauge.path, g_gauge.zero_raw, g_gauge.mm_per_count, g_gauge.factor,
-           (double)GAUGE_MM, g_gauge.min_mm, g_gauge.max_mm);
+    if (g_gauge.laser_min_mm > g_gauge.laser_max_mm) {
+        double tmp = g_gauge.laser_min_mm;
+        g_gauge.laser_min_mm = g_gauge.laser_max_mm;
+        g_gauge.laser_max_mm = tmp;
+    }
+    printf("[GAUGE] source=%s path=%s nominal=%.1f range=[%.1f, %.1f]\n",
+           g_gauge.source_laser_adc ? "laser_adc" : "adc",
+           g_gauge.path, (double)GAUGE_MM, g_gauge.min_mm, g_gauge.max_mm);
+    printf("[GAUGE] output_mode=%s\n", g_gauge.gauge_output_deviation ? "deviation_from_nominal" : "absolute_gauge_mm");
+    if (g_gauge.source_laser_adc) {
+        if (g_gauge.laser_auto_zero && g_gauge.laser_zero_raw < 0.0) {
+            int raw = 0;
+            if (gauge_read_raw(&g_gauge, &raw) == 0) {
+                g_gauge.laser_zero_raw = (double)raw;
+                printf("[GAUGE] laser auto-zero raw=%d -> nominal %.1f mm\n", raw, (double)GAUGE_MM);
+            } else {
+                printf("[GAUGE] laser auto-zero pending; ADC read failed at startup\n");
+            }
+        }
+        printf("[GAUGE] laser range=[%.1f, %.1f] zero=%.2f sign=%d factor=%.3f adc_max=%.0f\n",
+               g_gauge.laser_min_mm, g_gauge.laser_max_mm, g_gauge.laser_zero_mm,
+               g_gauge.laser_sign, g_gauge.factor, g_gauge.adc_max_raw);
+        if (g_gauge.laser_zero_raw >= 0.0) {
+            printf("[GAUGE] laser offset mode zero_raw=%.0f mpc=%.6f mm/count\n",
+                   g_gauge.laser_zero_raw, g_gauge.laser_mm_per_count);
+        }
+    } else {
+        printf("[GAUGE] adc zero=%.2f mpc=%.6f factor=%.3f\n",
+               g_gauge.zero_raw, g_gauge.mm_per_count, g_gauge.factor);
+    }
 }
 
 static int gauge_read_raw(const GaugeADC *gauge, int *raw_out) {
@@ -206,16 +293,54 @@ static int gauge_read_raw(const GaugeADC *gauge, int *raw_out) {
 static int gauge_read_mm(GaugeADC *gauge, float *gauge_mm_out) {
     int raw;
     double gauge_mm;
+    double output_mm;
+    double ratio;
+    double laser_mm;
     if (!gauge || !gauge_mm_out) return -1;
     if (gauge_read_raw(gauge, &raw) != 0) {
         gauge->healthy = 0;
         return -1;
     }
     gauge->healthy = 1;
-    gauge_mm = GAUGE_MM + ((double)raw - gauge->zero_raw) * gauge->mm_per_count * gauge->factor;
-    if (gauge_mm < gauge->min_mm) gauge_mm = gauge->min_mm;
-    if (gauge_mm > gauge->max_mm) gauge_mm = gauge->max_mm;
-    *gauge_mm_out = (float)gauge_mm;
+    if (gauge->source_laser_adc) {
+        if (gauge->laser_auto_zero && (gauge->laser_zero_raw < 15.0)) {
+            if (raw >= 15) {
+                gauge->laser_zero_raw = (double)raw;
+                printf("[GAUGE] laser auto-zero locked raw=%d\n", raw);
+            }
+        }
+        if (gauge->laser_zero_raw < 0.0 || raw < 15 || raw > 3060) {
+            output_mm = 0.0;
+        } else {
+            ratio = (double)raw / gauge->adc_max_raw;
+            if (ratio < 0.0) ratio = 0.0;
+            if (ratio > 1.0) ratio = 1.0;
+            laser_mm = gauge->laser_min_mm + ratio * (gauge->laser_max_mm - gauge->laser_min_mm);
+            if (laser_mm < 0.0) laser_mm = 0.0;
+            if (laser_mm > 160.0) laser_mm = 160.0;
+            gauge->last_laser_mm = laser_mm;
+            
+            if (gauge->gauge_output_deviation) {
+                double reference_laser;
+                if (gauge->laser_zero_raw >= 0.0) {
+                    reference_laser = gauge->laser_min_mm + (gauge->laser_zero_raw / gauge->adc_max_raw) * (gauge->laser_max_mm - gauge->laser_min_mm);
+                } else {
+                    reference_laser = gauge->laser_zero_mm;
+                }
+                output_mm = (reference_laser - laser_mm) * gauge->factor;
+            } else {
+                output_mm = laser_mm * gauge->factor;
+                if (output_mm < 0.0) output_mm = 0.0;
+                if (output_mm > 160.0) output_mm = 160.0;
+            }
+        }
+    } else {
+        gauge_mm = GAUGE_MM + ((double)raw - gauge->zero_raw) * gauge->mm_per_count * gauge->factor;
+        if (gauge_mm < gauge->min_mm) gauge_mm = gauge->min_mm;
+        if (gauge_mm > gauge->max_mm) gauge_mm = gauge->max_mm;
+        output_mm = gauge->gauge_output_deviation ? (gauge_mm - GAUGE_MM) : gauge_mm;
+    }
+    *gauge_mm_out = (float)output_mm;
     return 0;
 }
 

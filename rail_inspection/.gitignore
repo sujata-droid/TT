@@ -2,3 +2,5 @@ __pycache__/
 */__pycache__/
 *.pyc
 bbb_runtime/logs/
+rail_config.json
+TT_push_fix/

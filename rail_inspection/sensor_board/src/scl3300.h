@@ -37,10 +37,12 @@
  * -------------------
  *   Sensitivity in Mode 4 = 12000 LSB/g
  *   If tilted by angle theta from horizontal:
- *     ACC_X_raw = sensitivity_lsb_g * sin(theta)
+ *     ACC_axis_raw = sensitivity_lsb_g * sin(theta)
  *   Cross-level (mm) = gauge_mm * sin(theta)
- *                    = gauge_mm * (ACC_X_raw / sensitivity_lsb_g)
+ *                    = gauge_mm * (ACC_axis_raw / sensitivity_lsb_g)
  *                    = 1676 * (raw / sensitivity_lsb_g)  [for BG rail]
+ *   Runtime axis selection:
+ *     RAIL_SCL_AXIS=X/Y/Z (default X)
  *
  * TWIST FORMULA
  *   twist (mm/m) = (C1 - C2) / L
@@ -129,6 +131,8 @@ typedef struct {
     uint8_t  rs_field;
     uint32_t crc_error_count;
     float    last_cl_mm;
+    uint32_t cross_axis_cmd;
+    char     cross_axis;
 } SCL3300;
 
 /* API */

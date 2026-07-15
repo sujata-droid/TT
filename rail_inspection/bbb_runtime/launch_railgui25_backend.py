@@ -217,16 +217,21 @@ class SharedMemorySensorThread(gui_app.SensorThread):
                 time.sleep(0.5)
                 continue
 
-            if self.active:
-                try:
+            try:
+                if self.active:
                     sample = self._bridge.next_display_sample()
                     self.motion.emit(self._bridge.is_moving(sample))
                     self._emit_fault("" if sample["scl_ok"] else "SCL3300 backend not ready")
                     self.data_ready.emit(sample)
-                except Exception as exc:
-                    self._emit_fault(str(exc))
-                    time.sleep(0.5)
-                    continue
+                else:
+                    # Keep the hardware path warm while STOP is selected, but
+                    # do not update dashboard values or CSV samples.
+                    frame = self._bridge.read_next_frame(require_new=True)
+                    self._emit_fault("" if frame.scl_ok else "SCL3300 backend not ready")
+            except Exception as exc:
+                self._emit_fault(str(exc))
+                time.sleep(0.5)
+                continue
             self.msleep(poll_ms)
 
 
@@ -545,7 +550,11 @@ def optimized_metric_refresh(self, val):
         return
 
     warn, alarm = gui_app._THRESH.get(self.key, (None, None))
-    dev = (abs(float(val) - GAUGE_NOMINAL_MM) if self.key == "gauge" else abs(float(val)))
+    if self.key == "gauge":
+        v = float(val)
+        dev = abs(v - GAUGE_NOMINAL_MM) if abs(v) > 1000.0 else abs(v)
+    else:
+        dev = abs(float(val))
     if alarm is not None and dev >= alarm:
         state = ("alarm", gui_app.RED, "ALARM", "QFrame#Card{background:#FFEBEE; border:1px solid #DDE3EA; border-left:4px solid " + gui_app.RED + "; border-radius:10px;}", "⚠  ALARM")
     elif warn is not None and dev >= warn:

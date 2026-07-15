@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <time.h>
+#include <ctype.h>
 #include <sys/ioctl.h>
 #include <linux/spi/spidev.h>
 
@@ -73,6 +74,26 @@ static int spi_xfer32(int fd, uint32_t tx, uint32_t *rx_out) {
 
 static inline uint8_t frame_rs(uint32_t rx)   { return (uint8_t)((rx >> 24) & 0x03u); }
 static inline int16_t frame_data(uint32_t rx)  { return (int16_t)((rx >>  8) & 0xFFFFu); }
+
+static uint32_t axis_command_from_env(char *axis_out) {
+    const char *axis = getenv("RAIL_SCL_AXIS");
+    char selected = 'X';
+    if (axis && *axis) {
+        selected = (char)toupper((unsigned char)axis[0]);
+    }
+    switch (selected) {
+    case 'Y':
+        if (axis_out) *axis_out = 'Y';
+        return CMD_READ_ACC_Y;
+    case 'Z':
+        if (axis_out) *axis_out = 'Z';
+        return CMD_READ_ACC_Z;
+    case 'X':
+    default:
+        if (axis_out) *axis_out = 'X';
+        return CMD_READ_ACC_X;
+    }
+}
 static inline int     frame_crc_ok(uint32_t rx) {
     uint8_t b0=(uint8_t)((rx>>24)&0xFF), b1=(uint8_t)((rx>>16)&0xFF),
             b2=(uint8_t)((rx>>8)&0xFF),  b3=(uint8_t)(rx&0xFF);
@@ -91,6 +112,7 @@ static int read_whoami(int fd, uint8_t *whoami_out) {
 int scl3300_open(SCL3300 *dev) {
     memset(dev, 0, sizeof(SCL3300));
     dev->spi_fd = -1;
+    dev->cross_axis_cmd = axis_command_from_env(&dev->cross_axis);
 
     dev->spi_fd = open(SCL3300_SPI_DEV, O_RDWR);
     if (dev->spi_fd < 0) {
@@ -154,8 +176,10 @@ int scl3300_open(SCL3300 *dev) {
         }
     }
 
-    /* Prime pipeline for ACC_X reads */
-    if (spi_xfer32(dev->spi_fd, CMD_READ_ACC_X, &rx) < 0) goto fail;
+    printf("[SCL3300] Cross-level axis: ACC_%c\n", dev->cross_axis);
+
+    /* Prime pipeline for the configured acceleration axis. */
+    if (spi_xfer32(dev->spi_fd, dev->cross_axis_cmd, &rx) < 0) goto fail;
 
     dev->initialized = 1;
     dev->healthy     = (dev->rs_field == RS_NORMAL);
@@ -170,7 +194,7 @@ fail:
 int scl3300_read_cross_level(SCL3300 *dev, float *out_mm) {
     if (!dev->initialized || dev->spi_fd < 0) return -1;
     uint32_t rx;
-    if (spi_xfer32(dev->spi_fd, CMD_READ_ACC_X, &rx) < 0) {
+    if (spi_xfer32(dev->spi_fd, dev->cross_axis_cmd, &rx) < 0) {
         dev->healthy = 0; return -1;
     }
     static int debug_count = 0;

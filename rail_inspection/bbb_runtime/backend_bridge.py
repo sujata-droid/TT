@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Shared-memory bridge for railgui25.py without modifying the original file."""
 
+import json
 import math
 import mmap
 import os
+import select
+import socket
 import statistics
 import time
 from collections import deque
@@ -43,6 +46,10 @@ MOTION_TWIST_MM_M = 0.15
 MOTION_GAUGE_MM = 0.10
 MOTION_DIST_M = 0.05
 
+GPSD_HOST = os.environ.get("RAIL_GPSD_HOST", "127.0.0.1")
+GPSD_PORT = int(os.environ.get("RAIL_GPSD_PORT", "2947"))
+GPS_STALE_SECONDS = float(os.environ.get("RAIL_GPS_STALE_SECONDS", "30"))
+
 
 def _rounded(value: float) -> float:
     return round(float(value), DISPLAY_DECIMALS)
@@ -76,11 +83,103 @@ class RawFrame:
     encoder_ok: bool
 
 
+class GPSDReader:
+    """Non-blocking gpsd client.
+
+    gpsd only provides latitude/longitude after satellite fix. Until TPV mode is
+    2 or 3, this reader deliberately returns 0.0 so the CSV does not contain a
+    fake location.
+    """
+
+    def __init__(self):
+        self._sock = None
+        self._buf = ""
+        self._next_connect = 0.0
+        self._lat = 0.0
+        self._lon = 0.0
+        self._speed = 0.0
+        self._mode = 0
+        self._last_fix = 0.0
+
+    def close(self) -> None:
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+        self._sock = None
+
+    def _connect(self) -> None:
+        now = time.time()
+        if self._sock is not None or now < self._next_connect:
+            return
+        self._next_connect = now + 5.0
+        try:
+            sock = socket.create_connection((GPSD_HOST, GPSD_PORT), timeout=0.25)
+            sock.setblocking(False)
+            sock.sendall(b'?WATCH={"enable":true,"json":true};\n')
+            self._sock = sock
+        except Exception:
+            self.close()
+
+    def poll(self) -> Dict[str, float]:
+        self._connect()
+        if self._sock is None:
+            return self.latest()
+
+        try:
+            while True:
+                readable, _, _ = select.select([self._sock], [], [], 0)
+                if not readable:
+                    break
+                chunk = self._sock.recv(4096)
+                if not chunk:
+                    self.close()
+                    break
+                self._buf += chunk.decode("ascii", "ignore")
+                while "\n" in self._buf:
+                    line, self._buf = self._buf.split("\n", 1)
+                    self._handle_line(line.strip())
+        except Exception:
+            self.close()
+        return self.latest()
+
+    def _handle_line(self, line: str) -> None:
+        if not line:
+            return
+        try:
+            msg = json.loads(line)
+        except Exception:
+            return
+        if msg.get("class") != "TPV":
+            return
+        try:
+            self._mode = int(msg.get("mode", self._mode or 0))
+        except Exception:
+            self._mode = 0
+        if self._mode >= 2 and "lat" in msg and "lon" in msg:
+            self._lat = float(msg["lat"])
+            self._lon = float(msg["lon"])
+            self._speed = float(msg.get("speed", 0.0) or 0.0)
+            self._last_fix = time.time()
+
+    def latest(self) -> Dict[str, float]:
+        fresh = self._last_fix > 0.0 and (time.time() - self._last_fix) <= GPS_STALE_SECONDS
+        return {
+            "lat": self._lat if fresh else 0.0,
+            "lon": self._lon if fresh else 0.0,
+            "speed": self._speed if fresh else 0.0,
+            "gps_mode": self._mode,
+            "gps_ok": bool(fresh),
+        }
+
+
 class SharedMemoryBridge:
     def __init__(self, cfg: Optional[dict] = None):
         self.cfg = cfg or {}
         self._fd = None
         self._shm = None
+        self._gps = GPSDReader()
         self._last_update_count = None
         self._cross_hist: Deque[float] = deque(maxlen=CROSS_AVG_TAPS)
         self._twist_hist: Deque[float] = deque(maxlen=TWIST_AVG_TAPS)
@@ -112,6 +211,7 @@ class SharedMemoryBridge:
         self._twist_last_step_index: Optional[int] = None
 
     def close(self) -> None:
+        self._gps.close()
         if self._shm is not None:
             try:
                 self._shm.close()
@@ -261,9 +361,12 @@ class SharedMemoryBridge:
         self._display["twist"] = _rounded_twist(_stable_update(self._display["twist"], twist_avg, TWIST_DEADBAND_MM_M))
         self._display["gauge"] = _rounded(_stable_update(self._display["gauge"], gauge_avg, GAUGE_DEADBAND_MM))
         self._display["dist"] = _rounded(_stable_update(self._display["dist"], dist_avg, DIST_DEADBAND_M))
-        self._display["lat"] = 0.0
-        self._display["lon"] = 0.0
-        self._display["speed"] = 0.0
+        gps = self._gps.poll()
+        self._display["lat"] = gps["lat"]
+        self._display["lon"] = gps["lon"]
+        self._display["speed"] = gps["speed"]
+        self._display["gps_mode"] = gps["gps_mode"]
+        self._display["gps_ok"] = gps["gps_ok"]
         self._display["scl_ok"] = frame.scl_ok
         self._display["encoder_ok"] = frame.encoder_ok
         self._display["raw_cross_mm"] = cross

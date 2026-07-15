@@ -46,7 +46,7 @@
  *
  * Field meanings:
  *   timestamp_us   – monotonic clock, microseconds since service start
- *   cross_level_mm – lateral rail inclination in mm (from SCL3300 X axis)
+ *   cross_level_mm – lateral rail inclination in mm (from configured SCL3300 axis)
  *   twist_mm_per_m – rate of cross-level change per metre travelled
  *   chainage_m     – distance from survey start (from PRU encoder)
  *   gauge_mm       – always 1676 for Indian BG rail

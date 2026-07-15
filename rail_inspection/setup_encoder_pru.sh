@@ -24,6 +24,20 @@ make -C "$ROOT_DIR/sensor_board" pru
 echo "[ENC] Installing PRU firmware"
 cp "$ROOT_DIR/pru/encoder_pru0.out" /lib/firmware/am335x-pru0-fw
 
+wait_for_pru_stop() {
+    local node="$1"
+    local state=""
+    local i=0
+
+    for i in 1 2 3 4 5; do
+        state="$(cat "$node/state" 2>/dev/null || echo unknown)"
+        [ "$state" != "running" ] && return 0
+        sleep 0.2
+    done
+
+    return 1
+}
+
 started=0
 for d in /sys/class/remoteproc/remoteproc*; do
     [ -e "$d/name" ] || continue
@@ -31,11 +45,17 @@ for d in /sys/class/remoteproc/remoteproc*; do
         state="$(cat "$d/state" 2>/dev/null || echo unknown)"
         if [ "$state" = "running" ]; then
             echo stop > "$d/state" 2>/dev/null || true
-            sleep 1
+            wait_for_pru_stop "$d" || true
         fi
         echo am335x-pru0-fw > "$d/firmware"
-        sleep 1
-        echo start > "$d/state"
+        sleep 0.5
+        if ! echo start > "$d/state" 2>/dev/null; then
+            state="$(cat "$d/state" 2>/dev/null || echo unknown)"
+            if [ "$state" != "running" ]; then
+                echo "Could not start PRU0 via $d (state=$state)" >&2
+                exit 1
+            fi
+        fi
         echo "[ENC] PRU0 started via $d"
         started=1
         break

@@ -32,8 +32,7 @@ DEPLOY_ITEMS = [
     "bbb_runtime",
     "pru",
     "sensor_board",
-    "tools/encoder_console_test.py",
-    "tools/encoder_eqep_console_test.py",
+    "tools",
 ]
 
 
@@ -193,6 +192,9 @@ def deploy(args):
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/railgui25.py')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/encoder_console_test.py')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/encoder_eqep_console_test.py')}", timeout=30)
+    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/sensors/laser_gauge_adc_test.py')}", timeout=30)
+    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/sensors/inclinometer_monitor.py')}", timeout=30)
+    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/sensors/scl3300_axes_test.py')}", timeout=30)
     run(client, f"cd {shell_quote(REMOTE_ROOT + '/sensor_board')} && make clean && make", timeout=120)
     run(client, f"find {shell_quote(REMOTE_ROOT)} -type d -name __pycache__ -prune -exec rm -rf {{}} +", timeout=60)
     client.close()
