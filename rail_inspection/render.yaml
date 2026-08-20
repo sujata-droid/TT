@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: rail-inspection-cloud
+    runtime: python
+    rootDir: cloud
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: STORAGE_DIR
+        value: /var/data/rail_surveys
+    disk:
+      name: rail-surveys
+      mountPath: /var/data
+      sizeGB: 1

@@ -84,3 +84,9 @@ The UI uploads the completed CSV when the session is stopped. Manual upload:
 cd /home/debian/trolley
 bash push_latest_csv.sh /root/surveys
 ```
+
+Deployment files are included for Render:
+
+- `render.yaml` - Blueprint for the Flask cloud service.
+- `cloud/Procfile` - fallback start command for manual web-service setup.
+- `cloud/README.md` - setup and upload instructions.
