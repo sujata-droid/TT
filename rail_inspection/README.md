@@ -75,7 +75,7 @@ RAIL_SCL_AXIS=X   # or Y / Z
 Default cloud endpoint:
 
 ```text
-https://render-cloud-api.onrender.com/api/survey
+https://lwtmt-cloud-backend.onrender.com/api/survey
 ```
 
 The UI uploads the completed CSV when the session is stopped. Manual upload:
@@ -83,6 +83,12 @@ The UI uploads the completed CSV when the session is stopped. Manual upload:
 ```bash
 cd /home/debian/trolley
 bash push_latest_csv.sh /root/surveys
+```
+
+Frontend dashboard:
+
+```text
+https://lwtmt-cloud-frontend.onrender.com
 ```
 
 Deployment files are included for Render:

@@ -6,7 +6,7 @@ LOG_DIR="$ROOT_DIR/bbb_runtime/logs"
 SENSOR_LOG="$LOG_DIR/sensor_service.log"
 DIAG_JSON="$LOG_DIR/backend_diag.json"
 MODE="${1:-all}"
-export RAIL_CLOUD_URL="${RAIL_CLOUD_URL:-https://render-cloud-api.onrender.com/api/survey}"
+export RAIL_CLOUD_URL="${RAIL_CLOUD_URL:-https://lwtmt-cloud-backend.onrender.com/api/survey}"
 export RAIL_SCL_AXIS="${RAIL_SCL_AXIS:-X}"
 export RAIL_ENCODER_PPR="${RAIL_ENCODER_PPR:-400}"
 export RAIL_WHEEL_DIAMETER_MM="${RAIL_WHEEL_DIAMETER_MM:-250}"
@@ -39,7 +39,7 @@ fi
 
 cleanup() {
     if [ -n "${SENSOR_PID:-}" ]; then
-        kill "$SENSOR_PID" 2>/dev/null || true
+        $SUDO kill "$SENSOR_PID" 2>/dev/null || true
         wait "$SENSOR_PID" 2>/dev/null || true
     fi
 }
@@ -69,7 +69,7 @@ $SUDO pkill -x sensor_service 2>/dev/null || true
     $SUDO bash -c "cd '$ROOT_DIR' && env RAIL_SCL_AXIS='$RAIL_SCL_AXIS' RAIL_ENCODER_PPR='$RAIL_ENCODER_PPR' RAIL_WHEEL_DIAMETER_MM='$RAIL_WHEEL_DIAMETER_MM' RAIL_ENCODER_INVERT='$RAIL_ENCODER_INVERT' RAIL_SAMPLING_DISTANCE_M='$RAIL_SAMPLING_DISTANCE_M' RAIL_TWIST_BASE_M='$RAIL_TWIST_BASE_M' RAIL_GAUGE_SOURCE='$RAIL_GAUGE_SOURCE' RAIL_GAUGE_OUTPUT_MODE='$RAIL_GAUGE_OUTPUT_MODE' RAIL_ADC_PATH='$RAIL_ADC_PATH' RAIL_ADC_MAX_RAW='$RAIL_ADC_MAX_RAW' RAIL_LASER_MIN_MM='$RAIL_LASER_MIN_MM' RAIL_LASER_MAX_MM='$RAIL_LASER_MAX_MM' RAIL_LASER_ZERO_MM='$RAIL_LASER_ZERO_MM' RAIL_LASER_ZERO_RAW='$RAIL_LASER_ZERO_RAW' RAIL_LASER_MPC='$RAIL_LASER_MPC' RAIL_LASER_AUTO_ZERO='$RAIL_LASER_AUTO_ZERO' RAIL_LASER_SIGN='$RAIL_LASER_SIGN' RAIL_GAUGE_FACTOR='$RAIL_GAUGE_FACTOR' ./sensor_board/sensor_service >'$SENSOR_LOG' 2>&1" &
 SENSOR_PID=$!
 sleep 2
-if ! kill -0 "$SENSOR_PID" 2>/dev/null; then
+if ! $SUDO kill -0 "$SENSOR_PID" 2>/dev/null; then
     echo "sensor_service failed to stay up"
     cat "$SENSOR_LOG"
     exit 1

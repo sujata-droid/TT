@@ -34,7 +34,7 @@ This repo includes a root `render.yaml` Blueprint.
 5. After deploy, open:
 
 ```text
-https://<your-render-service>.onrender.com/health
+https://lwtmt-cloud-backend.onrender.com/health
 ```
 
 The Blueprint mounts a persistent disk at `/var/data` and sets `STORAGE_DIR=/var/data/rail_surveys`, so uploaded CSV files survive redeploys.
@@ -44,7 +44,7 @@ The Blueprint mounts a persistent disk at `/var/data` and sets `STORAGE_DIR=/var
 Set the cloud endpoint before launching the backend:
 
 ```bash
-export RAIL_CLOUD_URL=https://<your-render-service>.onrender.com/api/survey
+export RAIL_CLOUD_URL=https://lwtmt-cloud-backend.onrender.com/api/survey
 cd /home/debian/trolley
 bash bbb_runtime/run_railgui25_backend.sh
 ```
@@ -53,5 +53,11 @@ Manual upload of the latest CSV:
 
 ```bash
 cd /home/debian/trolley
-RAIL_CLOUD_URL=https://<your-render-service>.onrender.com/api/survey bash push_latest_csv.sh /home/debian/surveys
+RAIL_CLOUD_URL=https://lwtmt-cloud-backend.onrender.com/api/survey bash push_latest_csv.sh /home/debian/surveys
+```
+
+Frontend dashboard:
+
+```text
+https://lwtmt-cloud-frontend.onrender.com
 ```

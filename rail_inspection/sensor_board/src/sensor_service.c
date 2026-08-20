@@ -230,10 +230,10 @@ static void gauge_init(void) {
     g_gauge.max_mm = env_double("RAIL_GAUGE_MAX_MM", GAUGE_MAX_MM_DEFAULT);
     g_gauge.adc_max_raw = env_double("RAIL_ADC_MAX_RAW", GAUGE_ADC_MAX_RAW_DEFAULT);
     g_gauge.laser_min_mm = env_double("RAIL_LASER_MIN_MM", LASER_MIN_MM_DEFAULT);
-    g_gauge.laser_max_mm = env_double("RAIL_LASER_MAX_MM", LASER_MAX_MM_DEFAULT);
+    g_gauge.laser_max_mm = env_double_any("RAIL_LASER_MAX_MM", LASER_MAX_MM_DEFAULT);
     g_gauge.laser_zero_mm = env_double_any("RAIL_LASER_ZERO_MM", LASER_ZERO_MM_DEFAULT);
     g_gauge.laser_zero_raw = env_double_any("RAIL_LASER_ZERO_RAW", -1.0);
-    g_gauge.laser_mm_per_count = env_double("RAIL_LASER_MPC",
+    g_gauge.laser_mm_per_count = env_double_any("RAIL_LASER_MPC",
                                             (LASER_MAX_MM_DEFAULT - LASER_MIN_MM_DEFAULT) / GAUGE_ADC_MAX_RAW_DEFAULT);
     g_gauge.laser_sign = env_int("RAIL_LASER_SIGN", -1) < 0 ? -1 : 1;
     g_gauge.laser_auto_zero = env_int("RAIL_LASER_AUTO_ZERO", LASER_AUTO_ZERO_DEFAULT) != 0;

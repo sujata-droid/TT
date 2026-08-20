@@ -7,7 +7,9 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -26,8 +28,9 @@ from backend_bridge import SharedMemoryBridge, format_diag
 
 CSV_FLUSH_ROWS = 50
 UI_REFRESH_MS = 100
-DEFAULT_CLOUD_ROOT = "https://render-cloud-api.onrender.com/api/survey"
+DEFAULT_CLOUD_ROOT = "https://lwtmt-cloud-backend.onrender.com/api/survey"
 CLOUD_RETRIES = 3
+CLOUD_UPLOAD_TIMEOUT_SECS = 300
 GAUGE_NOMINAL_MM = 1676.0
 LOG_DIR = RUNTIME_DIR / "logs"
 STATUS_FILE = LOG_DIR / "cloud_status.json"
@@ -124,28 +127,74 @@ def _write_cloud_status(ok: bool, message: str, csv_path: str = "", queued: bool
 def _build_payload(csv_path: str):
     with open(csv_path, newline="") as handle:
         rows = list(gui_app.csv.DictReader(handle))
+    station_no = ""
+    for row in rows:
+        station_no = (
+            row.get("Station Code")
+            or row.get("Station No")
+            or row.get("station_no")
+            or row.get("stationCode")
+            or row.get("station")
+            or ""
+        ).strip()
+        if station_no:
+            break
+    if station_no:
+        for row in rows:
+            row.setdefault("Station No", station_no)
+            row.setdefault("station_no", station_no)
+            row.setdefault("stationCode", station_no)
     body = json.dumps({
         "filename": os.path.basename(csv_path),
+        "station_no": station_no,
+        "stationCode": station_no,
+        "station_code": station_no,
+        "station": station_no,
         "data": rows,
     }).encode("utf-8")
     return body, len(rows)
 
 
-def _post_payload(body: bytes, timeout: int = 20):
-    req = urllib.request.Request(
-        CLOUD_URL,
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "RailInspection-BBB/1.0",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        response.read()
+def _post_payload(body: bytes, timeout: int = CLOUD_UPLOAD_TIMEOUT_SECS):
+    with tempfile.NamedTemporaryFile("wb", delete=False) as handle:
+        handle.write(body)
+        payload_path = handle.name
+    try:
+        result = subprocess.run(
+            [
+                "curl",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--max-time",
+                str(int(timeout)),
+                "-H",
+                "Content-Type:application/json",
+                "--data-binary",
+                f"@{payload_path}",
+                CLOUD_URL,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"curl upload failed ({result.returncode}): {detail}")
+    finally:
+        try:
+            os.unlink(payload_path)
+        except OSError:
+            pass
 
 
 def _format_cloud_error(exc: Exception) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            detail = ""
+        return f"HTTP {exc.code}: {detail}" if detail else f"HTTP {exc.code}"
     if isinstance(exc, urllib.error.URLError):
         reason = getattr(exc, "reason", None)
         if isinstance(reason, socket.gaierror) and getattr(reason, "errno", None) == -3:
@@ -163,7 +212,7 @@ def _flush_cloud_queue() -> None:
             continue
         try:
             body, rows = _build_payload(path)
-            _post_payload(body, timeout=20)
+            _post_payload(body)
             _write_cloud_status(True, f"Uploaded queued file ({rows} rows): {os.path.basename(path)}", path)
         except Exception:
             remaining.append(path)
@@ -358,7 +407,7 @@ class CloudPushThread(gui_app.QThread):
 
         for attempt in range(CLOUD_RETRIES):
             try:
-                _post_payload(body, timeout=20)
+                _post_payload(body)
                 msg = f"Uploaded {rows_count} rows"
                 _write_cloud_status(True, msg, self.csv_path)
                 self.done.emit(True, msg)
