@@ -40,6 +40,7 @@ CSV_FIELDS = [
     "Date & Time",
     "Reference Type",
     "Reference Point",
+    "Station No",
     "Station Code",
     "Chainage",
     "Loop/Line Siding",
@@ -49,7 +50,8 @@ CSV_FIELDS = [
     "Hectometer Post",
     "Name",
     "Designation",
-    "Lattitude",
+    *gui_app.TRACK_FEATURES,
+    "Latitude",
     "Longitude",
     "Distance",
     "Gauge",
@@ -58,6 +60,7 @@ CSV_FIELDS = [
     "Cumulative Tilt",
 ]
 STATION_REF_PRIORITY = [
+    ("Station No", "Station"),
     ("Station Code", "Station"),
     ("Curve No", "Curve"),
     ("Level Crossing No", "Level crossing"),
@@ -127,11 +130,14 @@ def _write_cloud_status(ok: bool, message: str, csv_path: str = "", queued: bool
 def _build_payload(csv_path: str):
     with open(csv_path, newline="") as handle:
         rows = list(gui_app.csv.DictReader(handle))
+    for row in rows:
+        row.pop("Track Feature", None)
+        row.pop("Track Feature Location", None)
     station_no = ""
     for row in rows:
         station_no = (
-            row.get("Station Code")
-            or row.get("Station No")
+            row.get("Station No")
+            or row.get("Station Code")
             or row.get("station_no")
             or row.get("stationCode")
             or row.get("station")
@@ -144,6 +150,13 @@ def _build_payload(csv_path: str):
             row.setdefault("Station No", station_no)
             row.setdefault("station_no", station_no)
             row.setdefault("stationCode", station_no)
+            # Older CSVs stored every data-entry field in Reference Point.
+            # The cloud database reserves this summary field for a short
+            # reference; the complete station and track-feature data remains
+            # available in the dedicated CSV columns.
+            reference_point = str(row.get("Reference Point", "")).strip()
+            if len(reference_point) > 64:
+                row["Reference Point"] = station_no[:64]
     body = json.dumps({
         "filename": os.path.basename(csv_path),
         "station_no": station_no,
@@ -351,6 +364,7 @@ class BufferedCSVLogger(gui_app.CSVLogger):
             "Date & Time": gui_app.datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
             "Reference Type": self._ref_type or "",
             "Reference Point": self._ref_value or "",
+            "Station No": str(self._station_values.get("Station No", "")),
             "Station Code": str(self._station_values.get("Station Code", "")),
             "Chainage": str(self._station_values.get("Chainage", "")),
             "Loop/Line Siding": str(self._station_values.get("Loop/Line Siding", "")),
@@ -360,7 +374,9 @@ class BufferedCSVLogger(gui_app.CSVLogger):
             "Hectometer Post": str(self._station_values.get("Hectometer Post", "")),
             "Name": str(self._station_values.get("Name", "")),
             "Designation": str(self._station_values.get("Designation", "")),
-            "Lattitude": f"{float(d.get('lat', 0.0)):.5f}",
+            "Track Feature": str(self._station_values.get("Track Feature", "")),
+            "Track Feature Location": str(self._station_values.get("Track Feature Location", "")),
+            "Latitude": f"{float(d.get('lat', 0.0)):.5f}",
             "Longitude": f"{float(d.get('lon', 0.0)):.5f}",
             "Distance": f"{float(d.get('dist', 0.0)):.2f}",
             "Gauge": f"{float(d.get('gauge', 0.0)):.0f}",
@@ -368,6 +384,8 @@ class BufferedCSVLogger(gui_app.CSVLogger):
             "Absolute Tilt": f"{float(cross):.0f}",
             "Cumulative Tilt": f"{float(twist):.0f}",
         }
+        for feature in gui_app.TRACK_FEATURES:
+            row[feature] = str(self._station_values.get(feature, ""))
         self._rows.append((time.time(), row))
         self._w.writerow(row)
         self._unflushed += 1
@@ -440,13 +458,14 @@ class RuntimeNetThread(gui_app.NetThread):
         if gui_app.HW_SIM or not CLOUD_URL:
             return True
         try:
+            health_url = _cloud_root(CLOUD_URL).rstrip("/") + "/health"
             request = urllib.request.Request(
-                _cloud_root(CLOUD_URL) + "/",
+                health_url,
                 method="GET",
                 headers={"User-Agent": "RailInspection-BBB/1.0"},
             )
             with urllib.request.urlopen(request, timeout=5) as response:
-                return 200 <= response.status < 500
+                return response.status == 200
         except Exception:
             return False
 
@@ -649,6 +668,7 @@ def optimized_entry_push(self, d):
 def _extract_station_reference(entry_page):
     try:
         values = entry_page._station_params.get_values()
+        values.update(entry_page._track_features.get_values())
     except Exception:
         return "", "", {}
     values = {k: str(v).strip() for k, v in values.items()}
@@ -662,9 +682,6 @@ def _extract_station_reference(entry_page):
     if not ref_type and values.get("Chainage"):
         ref_type = "Chainage"
         ref_value = values.get("Chainage", "")
-    parts = [f"{k}: {v}" for k, v in values.items() if v]
-    if parts:
-        ref_value = " / ".join(parts)
     return ref_type, ref_value, values
 
 
@@ -682,9 +699,6 @@ def _entry_values_from_track_app(track_app):
         if not ref_type and values.get("Chainage"):
             ref_type = "Chainage"
             ref_value = values.get("Chainage", "")
-        parts = [f"{k}: {v}" for k, v in values.items() if v]
-        if parts:
-            ref_value = " / ".join(parts)
         return ref_type, ref_value, values
     if hasattr(track_app, "entry"):
         return _extract_station_reference(track_app.entry)
@@ -695,8 +709,11 @@ def _apply_station_reference(track_app):
     ref_type, ref_value, values = _entry_values_from_track_app(track_app)
     track_app.logger.set_reference(ref_type, ref_value)
     track_app.logger._station_values = values
+    station_no = values.get("Station No", "").strip()
     station_code = values.get("Station Code", "").strip()
-    track_app.logger.set_station(station_code or "BLE")
+    track_app.logger.set_station(station_no or station_code or "BLE")
+    if hasattr(track_app, "dash"):
+        track_app.dash.set_station_no(station_no)
 
 
 def _runtime_save_entry(self):
@@ -720,7 +737,7 @@ def _runtime_tune_station_params(data_entry_page):
         return
 
     label_style = (
-        "color:#5B6575; font-size:9.5pt; font-weight:700;"
+        "color:#5B6575; font-size:10.5pt; font-weight:700;"
         " background:transparent; border:none;"
     )
     field_empty = (
@@ -747,11 +764,11 @@ def _runtime_tune_station_params(data_entry_page):
             continue
 
         row_layout.setSpacing(10)
-        label.setFixedWidth(150)
-        label.setMinimumHeight(42)
+        label.setFixedWidth(108)
+        label.setMinimumHeight(36)
         label.setWordWrap(True)
         label.setStyleSheet(label_style)
-        field.setFixedHeight(42)
+        field.setFixedHeight(32)
         current_text = field.text().strip()
         is_empty = current_text in {"", "Tap to enter", "Official name", "Designation"}
         field.setStyleSheet(field_empty if is_empty else field_filled)
@@ -761,6 +778,10 @@ def patched_data_entry_init(original_init):
     def wrapper(self):
         original_init(self)
         _runtime_tune_station_params(self)
+        track_features = getattr(self, "_track_features", None)
+        if track_features is not None:
+            for field in getattr(track_features, "_fields", {}).values():
+                field.setFixedHeight(32)
         root = self.layout()
         if root is None or root.count() < 3:
             return
@@ -845,8 +866,8 @@ class RuntimePopupKeyboardDialog(gui_app.QDialog):
         screen = gui_app.QApplication.primaryScreen()
         if screen is not None:
             geom = screen.availableGeometry()
-            target_w = int(geom.width() * 0.96)
-            target_h = int(geom.height() * 0.88)
+            target_w = int(geom.width() * 0.84)
+            target_h = int(geom.height() * 0.72)
             self.setGeometry(
                 geom.x() + (geom.width() - target_w) // 2,
                 geom.y() + (geom.height() - target_h) // 2,
@@ -854,34 +875,34 @@ class RuntimePopupKeyboardDialog(gui_app.QDialog):
                 target_h,
             )
         else:
-            self.resize(1180, 680)
+            self.resize(960, 520)
 
         self._buf = current or ""
         self._result = None
 
         root = gui_app.QVBoxLayout(self)
-        root.setContentsMargins(28, 24, 28, 24)
-        root.setSpacing(16)
-        inner_w = max(780, self.width() - 56)
-        key_gap = 10
-        alpha_key_w = max(68, min(96, (inner_w - (9 * key_gap) - 120) // 10))
-        alpha_key_h = max(64, min(82, int((self.height() - 260) / 5.2)))
+        root.setContentsMargins(18, 16, 18, 16)
+        root.setSpacing(8)
+        inner_w = max(480, self.width() - 36)
+        key_gap = 6
+        alpha_key_w = max(48, min(76, (inner_w - (9 * key_gap) - 80) // 10))
+        alpha_key_h = max(42, min(58, int((self.height() - 180) / 6)))
         special_key_w = alpha_key_w
-        space_key_w = max(220, alpha_key_w * 3)
-        action_h = max(70, alpha_key_h)
+        space_key_w = max(160, alpha_key_w * 3)
+        action_h = max(46, alpha_key_h)
 
         hdr = gui_app.QHBoxLayout()
         title = gui_app.QLabel(field_title.upper())
         title.setStyleSheet(
-            f"color:{gui_app.CYAN}; font-size:20pt; font-weight:bold; background:transparent;"
+            f"color:{gui_app.CYAN}; font-size:14pt; font-weight:bold; background:transparent;"
         )
         self._disp = gui_app.QLabel(self._buf or "-")
         self._disp.setAlignment(gui_app.Qt.AlignRight | gui_app.Qt.AlignVCenter)
-        self._disp.setMinimumHeight(84)
+        self._disp.setMinimumHeight(54)
         self._disp.setStyleSheet(
             f"background:#F8FAFB; border:2px solid {gui_app.CYAN}; border-radius:12px;"
-            f" color:{gui_app.CYAN}; font-size:22pt; font-family:'Courier New';"
-            f" padding-right:16px; font-weight:bold;"
+            f" color:{gui_app.CYAN}; font-size:16pt; font-family:'Courier New';"
+            f" padding-right:10px; font-weight:bold;"
         )
         hdr.addWidget(title, 0)
         hdr.addSpacing(20)
@@ -891,7 +912,7 @@ class RuntimePopupKeyboardDialog(gui_app.QDialog):
         key_rows = ["1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"]
         key_style = (
             "QPushButton { background:#F8FAFB; border:2px solid #D8E1EB;"
-            " border-radius:14px; color:#334155; font-size:20pt; font-weight:700; }"
+            " border-radius:8px; color:#334155; font-size:14pt; font-weight:700; }"
             "QPushButton:hover { background:#FFFFFF; border-color:#1565C0; }"
             "QPushButton:pressed { background:#EAF3FF; }"
         )
@@ -933,10 +954,10 @@ class RuntimePopupKeyboardDialog(gui_app.QDialog):
         actions = gui_app.QHBoxLayout()
         actions.setSpacing(12)
         for txt, fn, style, flex in [
-            ("BACK", self._backspace, "QPushButton { background:#F8FAFB; border:2px solid #D8E1EB; border-radius:14px; color:#5B6575; font-size:18pt; font-weight:700; }", 1),
-            ("CLEAR", self._clear, "QPushButton { background:#F8FAFB; border:2px solid #D8E1EB; border-radius:14px; color:#5B6575; font-size:18pt; font-weight:700; }", 1),
-            ("CANCEL", self.reject, f"QPushButton {{ background:#FFEBEE; border:2px solid {gui_app.RED}; border-radius:14px; color:{gui_app.RED}; font-size:18pt; font-weight:700; }}", 1),
-            ("DONE", self._confirm, f"QPushButton {{ background:{gui_app.CYAN}; border:2px solid {gui_app.CYAN}; border-radius:14px; color:#FFFFFF; font-size:18pt; font-weight:700; }}", 2),
+            ("BACK", self._backspace, "QPushButton { background:#F8FAFB; border:2px solid #D8E1EB; border-radius:8px; color:#5B6575; font-size:13pt; font-weight:700; }", 1),
+            ("CLEAR", self._clear, "QPushButton { background:#F8FAFB; border:2px solid #D8E1EB; border-radius:8px; color:#5B6575; font-size:13pt; font-weight:700; }", 1),
+            ("CANCEL", self.reject, f"QPushButton {{ background:#FFEBEE; border:2px solid {gui_app.RED}; border-radius:8px; color:{gui_app.RED}; font-size:13pt; font-weight:700; }}", 1),
+            ("DONE", self._confirm, f"QPushButton {{ background:{gui_app.CYAN}; border:2px solid {gui_app.CYAN}; border-radius:8px; color:#FFFFFF; font-size:13pt; font-weight:700; }}", 2),
         ]:
             btn = gui_app.QPushButton(txt)
             btn.setFixedHeight(action_h)

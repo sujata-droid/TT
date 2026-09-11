@@ -1,6 +1,7 @@
 import csv
 import os
 import tempfile
+import threading
 from io import BytesIO
 from datetime import date as date_cls
 from datetime import datetime
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Iterable, List, Mapping
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template_string, request, url_for
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 
 app = Flask(__name__)
@@ -18,8 +21,8 @@ STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 CSV_FIELDS = [
     "Sample No",
     "Date & Time",
-    "Reference Type",
-    "Reference Point",
+    "Designation",
+    "Station No",
     "Station Code",
     "Chainage",
     "Loop/Line Siding",
@@ -27,16 +30,232 @@ CSV_FIELDS = [
     "Curve No",
     "Level Crossing No",
     "Hectometer Post",
-    "Name",
-    "Designation",
-    "Lattitude",
+    "Bridge (Start)",
+    "Bridge (End)",
+    "Level Crossing (LC) In",
+    "Level Crossing (LC) Out",
+    "Kilometer Post (KM)",
+    "Points & Crossing (P&C)",
+    "Curve-In",
+    "Curve Out",
+    "OHE Mast (OHEM) Location",
+    "Switch Expansion Joint (SEJ)",
+    "Latitude",
     "Longitude",
     "Distance",
     "Gauge",
-    "Crossover",
-    "Absolute Tilt",
-    "Cumulative Tilt",
+    "Crosslevel",
+    "Twist",
 ]
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+_schema_lock = threading.Lock()
+_schema_ready = False
+DB_RECORD_FIELDS = [
+    ("sample_no", "Sample No"),
+    ("recorded_at", "Date & Time"),
+    ("designation", "Designation"),
+    ("station_no", "Station No"),
+    ("station_code", "Station Code"),
+    ("chainage", "Chainage"),
+    ("loop_line_siding", "Loop/Line Siding"),
+    ("turnout_no", "Turn-out No"),
+    ("curve_no", "Curve No"),
+    ("level_crossing_no", "Level Crossing No"),
+    ("hectometer_post", "Hectometer Post"),
+    ("bridge_start", "Bridge (Start)"),
+    ("bridge_end", "Bridge (End)"),
+    ("level_crossing_lc_in", "Level Crossing (LC) In"),
+    ("level_crossing_lc_out", "Level Crossing (LC) Out"),
+    ("kilometer_post", "Kilometer Post (KM)"),
+    ("points_crossing", "Points & Crossing (P&C)"),
+    ("curve_in", "Curve-In"),
+    ("curve_out", "Curve Out"),
+    ("ohe_mast_location", "OHE Mast (OHEM) Location"),
+    ("switch_expansion_joint", "Switch Expansion Joint (SEJ)"),
+    ("latitude", "Latitude"),
+    ("longitude", "Longitude"),
+    ("distance", "Distance"),
+    ("gauge", "Gauge"),
+    ("crosslevel", "Crosslevel"),
+    ("twist", "Twist"),
+]
+
+
+def _db_connect():
+    if not DATABASE_URL:
+        return None
+    return psycopg2.connect(DATABASE_URL, sslmode="require", connect_timeout=10)
+
+
+def _ensure_db_schema():
+    global _schema_ready
+    if not DATABASE_URL or _schema_ready:
+        return
+    with _schema_lock:
+        if _schema_ready:
+            return
+        with _db_connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS surveys (
+                        id SERIAL PRIMARY KEY,
+                        filename VARCHAR(255) NOT NULL,
+                        station_code VARCHAR(64),
+                        surveyor_name VARCHAR(128),
+                        designation VARCHAR(128),
+                        row_count INTEGER NOT NULL DEFAULT 0,
+                        uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+                    CREATE TABLE IF NOT EXISTS survey_records (
+                        id SERIAL PRIMARY KEY,
+                        survey_id INTEGER NOT NULL REFERENCES surveys(id) ON DELETE CASCADE,
+                        sample_no INTEGER,
+                        recorded_at TIMESTAMPTZ,
+                        name VARCHAR(128), designation VARCHAR(128),
+                        station_no VARCHAR(64), station_code VARCHAR(64),
+                        chainage DOUBLE PRECISION, loop_line_siding VARCHAR(64),
+                        turnout_no VARCHAR(64), curve_no VARCHAR(64),
+                        level_crossing_no VARCHAR(64), hectometer_post VARCHAR(64),
+                        track_feature TEXT, track_feature_location TEXT,
+                        bridge_start VARCHAR(128), bridge_end VARCHAR(128),
+                        level_crossing_lc_in VARCHAR(128), level_crossing_lc_out VARCHAR(128),
+                        kilometer_post VARCHAR(128), points_crossing VARCHAR(128),
+                        curve_in VARCHAR(128), curve_out VARCHAR(128),
+                        ohe_mast_location VARCHAR(128), switch_expansion_joint VARCHAR(128),
+                        latitude DOUBLE PRECISION, longitude DOUBLE PRECISION,
+                        distance DOUBLE PRECISION, gauge DOUBLE PRECISION,
+                        crosslevel DOUBLE PRECISION, twist DOUBLE PRECISION,
+                        reference_type VARCHAR(64), reference_point VARCHAR(64),
+                        crossover DOUBLE PRECISION, absolute_tilt DOUBLE PRECISION,
+                        cumulative_tilt DOUBLE PRECISION
+                    );
+                    ALTER TABLE survey_records
+                        ADD COLUMN IF NOT EXISTS name VARCHAR(128),
+                        ADD COLUMN IF NOT EXISTS designation VARCHAR(128),
+                        ADD COLUMN IF NOT EXISTS station_no VARCHAR(64),
+                        ADD COLUMN IF NOT EXISTS track_feature TEXT,
+                        ADD COLUMN IF NOT EXISTS track_feature_location TEXT,
+                        ADD COLUMN IF NOT EXISTS bridge_start VARCHAR(128),
+                        ADD COLUMN IF NOT EXISTS bridge_end VARCHAR(128),
+                        ADD COLUMN IF NOT EXISTS level_crossing_lc_in VARCHAR(128),
+                        ADD COLUMN IF NOT EXISTS level_crossing_lc_out VARCHAR(128),
+                        ADD COLUMN IF NOT EXISTS kilometer_post VARCHAR(128),
+                        ADD COLUMN IF NOT EXISTS points_crossing VARCHAR(128),
+                        ADD COLUMN IF NOT EXISTS curve_in VARCHAR(128),
+                        ADD COLUMN IF NOT EXISTS curve_out VARCHAR(128),
+                        ADD COLUMN IF NOT EXISTS ohe_mast_location VARCHAR(128),
+                        ADD COLUMN IF NOT EXISTS switch_expansion_joint VARCHAR(128),
+                        ADD COLUMN IF NOT EXISTS crosslevel DOUBLE PRECISION,
+                        ADD COLUMN IF NOT EXISTS twist DOUBLE PRECISION;
+                """)
+        _schema_ready = True
+
+
+def _row_value(row, *names):
+    for name in names:
+        value = row.get(name)
+        if value not in (None, ""):
+            return str(value).strip()
+    return None
+
+
+def _number(value):
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _recorded_at(value):
+    if not value:
+        return None
+    for fmt in ("%d-%m-%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(str(value).strip(), fmt)
+        except ValueError:
+            pass
+    return value
+
+
+def _store_rows_in_db(filename, rows):
+    _ensure_db_schema()
+    first = rows[0]
+    station = _row_value(first, "Station No", "station_no", "Station Code", "station")
+    with _db_connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO surveys (filename, station_code, surveyor_name, designation, row_count) "
+                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (filename, station, _row_value(first, "Name"), _row_value(first, "Designation"), len(rows)),
+            )
+            survey_id = cursor.fetchone()[0]
+            columns = [
+                "survey_id", "sample_no", "recorded_at", "name", "designation", "station_no", "station_code",
+                "chainage", "loop_line_siding", "turnout_no", "curve_no", "level_crossing_no", "hectometer_post",
+                "track_feature", "track_feature_location", "bridge_start", "bridge_end", "level_crossing_lc_in",
+                "level_crossing_lc_out", "kilometer_post", "points_crossing", "curve_in", "curve_out",
+                "ohe_mast_location", "switch_expansion_joint", "latitude", "longitude", "distance", "gauge",
+                "crosslevel", "twist", "reference_type", "reference_point",
+            ]
+            placeholders = ", ".join(["%s"] * len(columns))
+            query = f"INSERT INTO survey_records ({', '.join(columns)}) VALUES ({placeholders})"
+            for row in rows:
+                cursor.execute(query, (
+                    survey_id, _number(_row_value(row, "Sample No")),
+                    _recorded_at(_row_value(row, "Date & Time", "Date Time")),
+                    _row_value(row, "Name"), _row_value(row, "Designation"),
+                    _row_value(row, "Station No", "station_no"), _row_value(row, "Station Code", "station_code"),
+                    _number(_row_value(row, "Chainage")), _row_value(row, "Loop/Line Siding"),
+                    _row_value(row, "Turn-out No", "Turnout No"), _row_value(row, "Curve No"),
+                    _row_value(row, "Level Crossing No"), _row_value(row, "Hectometer Post"),
+                    _row_value(row, "Track Feature"), _row_value(row, "Track Feature Location"),
+                    _row_value(row, "Bridge (Start)"), _row_value(row, "Bridge (End)"),
+                    _row_value(row, "Level Crossing (LC) In"), _row_value(row, "Level Crossing (LC) Out"),
+                    _row_value(row, "Kilometer Post (KM)"), _row_value(row, "Points & Crossing (P&C)"),
+                    _row_value(row, "Curve-In"), _row_value(row, "Curve Out"),
+                    _row_value(row, "OHE Mast (OHEM) Location"), _row_value(row, "Switch Expansion Joint (SEJ)"),
+                    _number(_row_value(row, "Latitude", "Lattitude")), _number(_row_value(row, "Longitude")),
+                    _number(_row_value(row, "Distance")), _number(_row_value(row, "Gauge")),
+                    _number(_row_value(row, "Crosslevel", "Crossover")),
+                    _number(_row_value(row, "Twist", "Cumulative Tilt")),
+                    _row_value(row, "Reference Type"), _row_value(row, "Reference Point"),
+                ))
+            return survey_id
+
+
+def _db_records(station=""):
+    _ensure_db_schema()
+    where = ""
+    params = []
+    if station:
+        where = "WHERE COALESCE(sr.station_no, sr.station_code, s.station_code) = %s"
+        params.append(station)
+    fields = ", ".join(
+        f"sr.{key}"
+        for key, _ in DB_RECORD_FIELDS
+        if key not in {"station_no", "station_code", "crosslevel", "twist"}
+    )
+    query = f"""
+        SELECT sr.survey_id, {fields},
+               COALESCE(sr.station_no, s.station_code) AS station_no,
+               COALESCE(sr.station_code, s.station_code) AS station_code,
+               COALESCE(sr.crosslevel, sr.crossover) AS crosslevel,
+               COALESCE(sr.twist, sr.cumulative_tilt) AS twist
+        FROM survey_records sr JOIN surveys s ON s.id = sr.survey_id
+        {where}
+        ORDER BY sr.recorded_at ASC NULLS LAST, sr.sample_no ASC, sr.id ASC
+    """
+    with _db_connect() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(query, params)
+            records = cursor.fetchall()
+    for record in records:
+        if record.get("recorded_at"):
+            record["recorded_at"] = record["recorded_at"].isoformat()
+    return records
 
 
 @app.after_request
@@ -169,27 +388,40 @@ def _csv_path(filename: str) -> Path:
     return path
 
 
+EXCLUDED_CSV_FIELDS = {"Track Feature", "Track Feature Location"}
+
+
 def _ordered_fields(rows: List[Mapping[str, object]]) -> List[str]:
     fields = [field for field in CSV_FIELDS if any(field in row for row in rows)]
     extras = []
     for row in rows:
         for key in row.keys():
+            if key in EXCLUDED_CSV_FIELDS:
+                continue
             if key not in fields and key not in extras:
                 extras.append(key)
     return fields + extras
 
 
 def _write_csv(path: Path, rows: List[Mapping[str, object]]) -> None:
-    fields = _ordered_fields(rows)
+    cleaned_rows = [
+        {key: value for key, value in row.items() if key not in EXCLUDED_CSV_FIELDS}
+        for row in rows
+    ]
+    fields = _ordered_fields(cleaned_rows)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(cleaned_rows)
 
 
 def _read_csv(path: Path) -> List[dict]:
     with path.open(newline="", encoding="utf-8") as handle:
-        return list(csv.DictReader(handle))
+        rows = list(csv.DictReader(handle))
+    return [
+        {key: value for key, value in row.items() if key not in EXCLUDED_CSV_FIELDS}
+        for row in rows
+    ]
 
 
 def _csv_files() -> Iterable[Path]:
@@ -505,6 +737,25 @@ def download_pdf(filename: str):
 @app.get("/api/csv-records")
 @app.get("/api/records")
 def api_surveys():
+    if DATABASE_URL:
+        station = (
+            request.args.get("station")
+            or request.args.get("stationNo")
+            or request.args.get("station_no")
+            or ""
+        ).strip()
+        try:
+            records = _db_records(station)
+            return jsonify({
+                "ok": True,
+                "records": records,
+                "columns": [{"key": key, "label": label} for key, label in DB_RECORD_FIELDS],
+                "total_rows": len(records),
+            })
+        except Exception as exc:
+            app.logger.exception("PostgreSQL records query failed")
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
     sessions = _selected_sessions_from_request()
     records = [_session_api_record(file) for file in sessions]
     return jsonify(
@@ -548,6 +799,19 @@ def api_survey():
         abort(400, "each data item must be an object")
 
     filename = _safe_filename(str(payload.get("filename", "")))
+    if DATABASE_URL:
+        try:
+            survey_id = _store_rows_in_db(filename, rows)
+            return jsonify({
+                "ok": True,
+                "surveyId": survey_id,
+                "filename": filename,
+                "rows": len(rows),
+            })
+        except Exception as exc:
+            app.logger.exception("PostgreSQL survey upload failed")
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
     path = _csv_path(filename)
     _write_csv(path, rows)
     return jsonify({"ok": True, "filename": path.name, "rows": len(rows), "view": url_for("view_survey", filename=path.name)})
@@ -555,4 +819,14 @@ def api_survey():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "storage": str(STORAGE_DIR)})
+    if DATABASE_URL:
+        try:
+            _ensure_db_schema()
+            with _db_connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT COUNT(*) FROM survey_records")
+                    row_count = cursor.fetchone()[0]
+            return jsonify({"ok": True, "database": "postgresql", "rows": row_count})
+        except Exception as exc:
+            return jsonify({"ok": False, "database": "postgresql", "error": str(exc)}), 503
+    return jsonify({"ok": True, "database": "file", "storage": str(STORAGE_DIR)})

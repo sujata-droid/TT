@@ -437,7 +437,7 @@ class PopupKeyboardDialog(QDialog):
         self.setWindowTitle(field_title)
         self.setModal(True)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setFixedSize(820, 340)
+        self.setFixedSize(720, 300)
         self.setStyleSheet(
             "QDialog { background:#FFFFFF; border:2px solid #1565C0;"
             " border-radius:16px; }")
@@ -488,7 +488,7 @@ class PopupKeyboardDialog(QDialog):
                 rl.addSpacing(48)
             for ch in row_str:
                 b = QPushButton(ch)
-                b.setFixedSize(60, 44)
+                b.setFixedSize(52, 36)
                 b.setStyleSheet(_KEY_SS)
                 b.clicked.connect(lambda _, v=ch: self._char(v))
                 rl.addWidget(b)
@@ -501,7 +501,7 @@ class PopupKeyboardDialog(QDialog):
         sp_row.addSpacing(70)
         for ch, lbl, w in [(" ", "SPACE", 280), ("-", "-", 60), (".", ".", 60), ("/", "/", 60), ("@", "@", 60), ("_", "_", 60)]:
             b = QPushButton(lbl)
-            b.setFixedSize(w, 44)
+            b.setFixedSize(w, 36)
             b.setStyleSheet(_KEY_SS)
             b.clicked.connect(lambda _, v=ch: self._char(v))
             sp_row.addWidget(b)
@@ -534,7 +534,7 @@ class PopupKeyboardDialog(QDialog):
             ("✓  DONE",    self._confirm,   _ACT_SS_DONE,   2),
         ]:
             b = QPushButton(txt)
-            b.setFixedHeight(44)
+            b.setFixedHeight(36)
             b.setStyleSheet(ss)
             b.clicked.connect(fn)
             bot.addWidget(b, flex)
@@ -1067,6 +1067,7 @@ class NetThread(QThread):
     def _lte(self):
         iface = self.cfg.get("lte_iface", "eth1")
         if _sysfs(f"/sys/class/net/{iface}/operstate", "down") == "up": return 3
+        if _sysfs("/sys/class/net/ppp0/operstate", "down") in {"up", "unknown"}: return 3
         if _sysfs("/sys/class/net/usb2/operstate",     "down") == "up": return 3
         if _sysfs("/sys/class/net/eth1/operstate",     "down") == "up": return 3
         if _sysfs("/sys/class/net/eth0/operstate",     "down") == "up": return 2
@@ -1099,6 +1100,9 @@ _FIELDS = [
     "twist",
     "tilt",
     "tilt_cord_length",
+    "station_no",
+    "track_feature",
+    "track_feature_location",
 ]
 
 
@@ -1111,6 +1115,7 @@ class CSVLogger:
         self._ref_type       = ""
         self._ref_value      = ""
         self._station        = "BLE"
+        self._station_values = {}
 
     def set_reference(self, ref_type, ref_value):
         self._ref_type  = ref_type
@@ -1145,6 +1150,7 @@ class CSVLogger:
             "twist":            d.get("twist", 0),
             "tilt":             cross,
             "tilt_cord_length": d.get("dist",  0),
+            "station_no":       self._station_values.get("Station No", ""),
         }
         self._rows.append((time.time(), row))
         self._w.writerow(row)
@@ -2305,8 +2311,8 @@ class ParamTableWidget(QFrame):
         title_lbl = QLabel(label)
         title_lbl.setAlignment(Qt.AlignCenter)
         title_lbl.setStyleSheet(
-            f"color:{color}; font-size:13pt; font-weight:bold;"
-            f" letter-spacing:2px; background:transparent; border:none;"
+            f"color:{color}; font-size:12pt; font-weight:bold;"
+            f" letter-spacing:1px; background:transparent; border:none;"
             f" padding:4px 0;")
         root.addWidget(title_lbl)
 
@@ -2318,7 +2324,7 @@ class ParamTableWidget(QFrame):
         freq_lbl = QLabel("Select recording frequency")
         freq_lbl.setAlignment(Qt.AlignCenter)
         freq_lbl.setStyleSheet(
-            "color:#4A5568; font-size:9pt; font-weight:600; background:transparent; border:none;")
+            "color:#4A5568; font-size:10.5pt; font-weight:600; background:transparent; border:none;")
         root.addWidget(freq_lbl)
 
         # Frequency buttons — vertical list, touch-friendly
@@ -2326,7 +2332,7 @@ class ParamTableWidget(QFrame):
         for val in self._freq_options:
             lbl_str = f"{val:g} m"
             btn = QPushButton(lbl_str)
-            btn.setFixedHeight(52)
+            btn.setFixedHeight(32)
             btn.setStyleSheet(self._btn_ss(False, color))
             btn.clicked.connect(lambda _, v=val: self._on_freq_selected(v))
             root.addWidget(btn)
@@ -2338,11 +2344,11 @@ class ParamTableWidget(QFrame):
         if active:
             return (
                 f"QPushButton {{ background:{color}18; border:2px solid {color};"
-                f" border-radius:10px; color:{color}; font-size:14pt; font-weight:700; }}"
+                f" border-radius:8px; color:{color}; font-size:10.5pt; font-weight:700; }}"
                 f"QPushButton:pressed {{ background:{color}30; }}")
         return (
             "QPushButton { background:#F8FAFB; border:1.5px solid #C8D0DA;"
-            " border-radius:10px; color:#334155; font-size:14pt; font-weight:700; }"
+            " border-radius:8px; color:#334155; font-size:10.5pt; font-weight:700; }"
             "QPushButton:hover { background:#FFFFFF; border-color:#1565C0; }"
             "QPushButton:pressed { background:#EAF3FF; }")
 
@@ -2374,6 +2380,7 @@ class StationParamsWidget(QFrame):
             " border-radius:10px; }")
 
         self._field_names = [
+            "Station No",
             "Station Code",
             "Chainage",
             "Loop/Line Siding",
@@ -2404,7 +2411,7 @@ class StationParamsWidget(QFrame):
 
         # Compact field list — each row is label + tappable value button
         _FIELD_SS_LABEL = (
-            "color:#5B6575; font-size:8.5pt; font-weight:600;"
+            "color:#5B6575; font-size:10.5pt; font-weight:600;"
             " background:transparent; border:none;")
         _FIELD_BTN_EMPTY = (
             "QPushButton { background:#F8FAFB; border:1px solid #C8D0DA; border-radius:6px;"
@@ -2424,11 +2431,12 @@ class StationParamsWidget(QFrame):
 
             lbl = QLabel(name)
             lbl.setStyleSheet(_FIELD_SS_LABEL)
-            lbl.setFixedWidth(135)
+            lbl.setFixedWidth(132)
+            lbl.setMinimumHeight(36)
             lbl.setWordWrap(True)
 
             field = TouchTextField(f"Tap to enter", field_title=name)
-            field.setFixedHeight(38)
+            field.setFixedHeight(32)
             self._fields[name] = field
 
             row.addWidget(lbl)
@@ -2453,10 +2461,11 @@ class StationParamsWidget(QFrame):
             row.setSpacing(8)
             lbl = QLabel(name)
             lbl.setStyleSheet(_FIELD_SS_LABEL)
-            lbl.setFixedWidth(135)
+            lbl.setFixedWidth(132)
+            lbl.setMinimumHeight(36)
             lbl.setWordWrap(True)
             field = TouchTextField(placeholder, field_title=name)
-            field.setFixedHeight(38)
+            field.setFixedHeight(32)
             self._fields[name] = field
             row.addWidget(lbl)
             row.addWidget(field, 1)
@@ -2466,6 +2475,70 @@ class StationParamsWidget(QFrame):
 
     def get_values(self):
         return {k: f.value() for k, f in self._fields.items()}
+
+
+TRACK_FEATURES = [
+    "Bridge (Start)",
+    "Bridge (End)",
+    "Level Crossing (LC) In",
+    "Level Crossing (LC) Out",
+    "Kilometer Post (KM)",
+    "Points & Crossing (P&C)",
+    "Curve-In",
+    "Curve Out",
+    "OHE Mast (OHEM) Location",
+    "Switch Expansion Joint (SEJ)",
+]
+
+
+class TrackFeaturesWidget(QFrame):
+    """Operator-entered locations for the Annexure 1 track features."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("Panel")
+        self.setStyleSheet(
+            "QFrame#Panel { background:#FFFFFF; border:1px solid #DDE3EA;"
+            " border-radius:10px; }")
+        self._fields = {}
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(9)
+
+        title = QLabel("TRACK FEATURES")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(
+            f"color:{HEADER_ACCENT}; font-size:12pt; font-weight:bold;"
+            " letter-spacing:1px; background:transparent; border:none; padding:4px 0;")
+        root.addWidget(title)
+
+        label_style = (
+            "color:#5B6575; font-size:10.5pt; font-weight:600;"
+            " background:transparent; border:none;")
+        for feature in TRACK_FEATURES:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
+            label = QLabel(feature)
+            label.setFixedWidth(132)
+            label.setMinimumHeight(36)
+            label.setWordWrap(True)
+            label.setStyleSheet(label_style)
+            field = TouchTextField("Tap to enter", field_title=feature)
+            field.setFixedHeight(32)
+            self._fields[feature] = field
+            row.addWidget(label)
+            row.addWidget(field, 1)
+            root.addLayout(row)
+        root.addStretch()
+
+    def get_values(self):
+        values = {feature: field.value() for feature, field in self._fields.items()}
+        entered = [(feature, value) for feature, value in values.items() if value]
+        values["Track Feature"] = "; ".join(feature for feature, _ in entered)
+        values["Track Feature Location"] = " / ".join(
+            f"{feature}: {value}" for feature, value in entered)
+        return values
 
 
 class DataEntryPage(QWidget):
@@ -2508,11 +2581,24 @@ class DataEntryPage(QWidget):
         self._station_params = StationParamsWidget()
         panels_l.addWidget(self._station_params, 1)
 
-        # Panels 2 & 3: Gauge + Twist
+        self._track_features = TrackFeaturesWidget()
+        panels_l.addWidget(self._track_features, 1)
+
+        self._measurements = QFrame()
+        self._measurements.setObjectName("Panel")
+        self._measurements.setStyleSheet(
+            "QFrame#Panel { background:#FFFFFF; border:1px solid #DDE3EA;"
+            " border-radius:10px; }")
+        measurements_layout = QVBoxLayout(self._measurements)
+        measurements_layout.setContentsMargins(6, 6, 6, 6)
+        measurements_layout.setSpacing(8)
+
+        # Gauge and Twist share the third column.
         for key, label, _, unit, color, freq_options in _PARAM_TABLES:
             tw = ParamTableWidget(label, color, unit, freq_options)
             self._tables[key] = tw
-            panels_l.addWidget(tw, 1)
+            measurements_layout.addWidget(tw, 1)
+        panels_l.addWidget(self._measurements, 1)
 
         root.addWidget(panels_w, 1)
 
@@ -2540,7 +2626,11 @@ class DataEntryPage(QWidget):
             tw.clear_rows()
 
     def get_data(self):
-        return {key: tw.get_rows() for key, tw in self._tables.items()}
+        return {
+            "station": self._station_params.get_values(),
+            "track_features": self._track_features.get_values(),
+            "parameters": {key: tw.get_rows() for key, tw in self._tables.items()},
+        }
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2773,40 +2863,48 @@ class DashboardPage(QWidget):
 
         # ── Bottom control bar — compact, pulled up ───────────────────────────
         bot_w = QWidget()
-        bot_w.setFixedHeight(92)
+        bot_w.setFixedHeight(76)
         bot_w.setStyleSheet("background:#ECEFF4;")
         bot = QHBoxLayout(bot_w)
-        bot.setContentsMargins(10, 10, 10, 10)
-        bot.setSpacing(18)
+        bot.setContentsMargins(8, 8, 8, 8)
+        bot.setSpacing(10)
 
         self._toggle = QPushButton("▶  START")
-        self._toggle.setFixedHeight(72)
-        self._toggle.setMinimumWidth(170)
+        self._toggle.setFixedHeight(58)
+        self._toggle.setMinimumWidth(130)
         self._toggle.setStyleSheet(self._ss_start())
         self._toggle.clicked.connect(self._do_toggle)
 
         self._pause_btn = QPushButton("⏸  PAUSE")
-        self._pause_btn.setFixedHeight(72)
-        self._pause_btn.setMinimumWidth(170)
+        self._pause_btn.setFixedHeight(58)
+        self._pause_btn.setMinimumWidth(130)
         self._pause_btn.setStyleSheet(self._ss_pause())
         self._pause_btn.setEnabled(False)
         self._pause_btn.clicked.connect(self._do_pause)
 
         vsep = QFrame()
-        vsep.setFixedSize(1, 50)
+        vsep.setFixedSize(1, 42)
         vsep.setStyleSheet("background:#DDE3EA; border:none;")
 
         self._entry_btn = QPushButton("DATA ENTRY")
-        self._entry_btn.setFixedHeight(72)
-        self._entry_btn.setMinimumWidth(190)
+        self._entry_btn.setFixedHeight(58)
+        self._entry_btn.setMinimumWidth(150)
         self._entry_btn.setStyleSheet(self._ss_action(CYAN))
         self._entry_btn.clicked.connect(self.sig_entry)
 
         self._cal_btn = QPushButton("CALIBRATE")
-        self._cal_btn.setFixedHeight(72)
-        self._cal_btn.setMinimumWidth(170)
+        self._cal_btn.setFixedHeight(58)
+        self._cal_btn.setMinimumWidth(130)
         self._cal_btn.setStyleSheet(self._ss_action(AMBER))
         self._cal_btn.clicked.connect(self.sig_cal)
+
+        self._station_no = QLabel("STN NO: --")
+        self._station_no.setFixedSize(124, 40)
+        self._station_no.setAlignment(Qt.AlignCenter)
+        self._station_no.setStyleSheet(
+            f"background:{CYAN_LT}; border:1px solid {CYAN}; border-radius:6px;"
+            f" color:{CYAN}; font-family:'Roboto Mono','Courier New',monospace;"
+            " font-size:9pt; font-weight:bold;")
 
         self._stat = QLabel("○  IDLE  0 pts")
         self._stat.setStyleSheet(
@@ -2821,6 +2919,7 @@ class DashboardPage(QWidget):
         bot.addWidget(self._cal_btn)
         bot.addSpacing(8)
         bot.addWidget(self._stat)
+        bot.addWidget(self._station_no)
         bot.addStretch()
 
         lay.addWidget(bot_w)
@@ -2832,7 +2931,7 @@ class DashboardPage(QWidget):
             f" background:{bg}; border:2px solid {color};"
             f" border-radius:8px; color:{color};"
             f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
-            f" font-size:15pt; font-weight:bold; padding:0px 26px;}}"
+            f" font-size:11pt; font-weight:bold; padding:0px 14px;}}"
             f"QPushButton:pressed{{"
             f" background:{color}; color:#FFFFFF; border:2px solid {color};}}"
             f"QPushButton:disabled{{"
@@ -2844,7 +2943,7 @@ class DashboardPage(QWidget):
             f" background:{NEON}; border:2px solid {NEON};"
             f" border-radius:8px; color:#FFFFFF;"
             f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
-            f" font-size:15pt; font-weight:bold; padding:0px 26px;}}"
+            f" font-size:11pt; font-weight:bold; padding:0px 14px;}}"
             f"QPushButton:pressed{{"
             f" background:#145E35; border-color:#145E35; color:#FFFFFF;}}")
 
@@ -2854,7 +2953,7 @@ class DashboardPage(QWidget):
             f" background:{RED}; border:2px solid {RED};"
             f" border-radius:8px; color:#FFFFFF;"
             f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
-            f" font-size:15pt; font-weight:bold; padding:0px 26px;}}"
+            f" font-size:11pt; font-weight:bold; padding:0px 14px;}}"
             f"QPushButton:pressed{{"
             f" background:#8B1A1A; border-color:#8B1A1A; color:#FFFFFF;}}")
 
@@ -2864,7 +2963,7 @@ class DashboardPage(QWidget):
             f" background:{AMBER_LT}; border:2px solid {AMBER};"
             f" border-radius:8px; color:{AMBER};"
             f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
-            f" font-size:15pt; font-weight:bold; padding:0px 26px;}}"
+            f" font-size:11pt; font-weight:bold; padding:0px 14px;}}"
             f"QPushButton:pressed{{"
             f" background:{AMBER}; color:#FFFFFF; border:2px solid {AMBER};}}"
             f"QPushButton:disabled{{"
@@ -2876,7 +2975,7 @@ class DashboardPage(QWidget):
             f" background:{CYAN}; border:2px solid {CYAN};"
             f" border-radius:8px; color:#FFFFFF;"
             f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
-            f" font-size:15pt; font-weight:bold; padding:0px 26px;}}"
+            f" font-size:11pt; font-weight:bold; padding:0px 14px;}}"
             f"QPushButton:pressed{{"
             f" background:#0D4A8A; border-color:#0D4A8A; color:#FFFFFF;}}")
 
@@ -2924,6 +3023,9 @@ class DashboardPage(QWidget):
         self._stat.setStyleSheet(
             f"color:{col}; font-family:'Roboto Mono','Courier New',monospace;"
             f" font-size:10pt; font-weight:500; letter-spacing:0.5px;")
+
+    def set_station_no(self, station_no):
+        self._station_no.setText(f"STN NO: {station_no or '--'}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
