@@ -19,7 +19,9 @@ echo "[ENC] Configuring BBB pins for PRU quadrature input"
 "$CONFIG_PIN" P9_30 pruin
 
 echo "[ENC] Building PRU firmware"
-make -C "$ROOT_DIR/sensor_board" pru
+# Files copied to the BBB can retain their original timestamps.  Force this
+# target so the PRU never restarts with an old encoder_pru0.out image.
+make -B -C "$ROOT_DIR/sensor_board" pru
 
 echo "[ENC] Installing PRU firmware"
 cp "$ROOT_DIR/pru/encoder_pru0.out" /lib/firmware/am335x-pru0-fw
@@ -68,4 +70,4 @@ if [ "$started" -ne 1 ]; then
 fi
 
 echo "[ENC] Launch test with:"
-echo "sudo python3 $ROOT_DIR/tools/encoder_console_test.py --ppr 400 --wheel-diameter-mm 250"
+echo "sudo python3 $ROOT_DIR/tools/encoder_console_test.py --ppr 400 --wheel-diameter-mm 50"

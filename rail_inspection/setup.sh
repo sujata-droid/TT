@@ -7,7 +7,7 @@
 #
 # What this script does (and WHY each step matters):
 #
-#  1. Install packages  -- PyQt5, build tools, PRU toolchain
+#  1. Install packages  -- PyQt5, build tools, PRU toolchain, GPSD
 #  2. Pin-mux config    -- Tell the BBB which physical function
 #                         each pin serves. Without this, SPI pins
 #                         behave as GPIO and the SCL3300 gets zero
@@ -45,6 +45,8 @@ apt-get install -y -qq \
     git \
     python3-pyqt5 \
     python3-pip \
+    gpsd \
+    gpsd-clients \
     pru-software-support-package \
     ti-pru-cgt-v2 \
     beaglebone-universal-io \
@@ -82,8 +84,11 @@ else
     warn "/dev/spidev0.0 not found. Try: modprobe spidev"
     modprobe spidev 2>/dev/null || true
     sleep 1
-    [ -e /dev/spidev0.0 ] && ok "/dev/spidev0.0 appeared after modprobe" \
-                           || warn "/dev/spidev0.0 still missing. Check DTS overlay."
+    if [ -e /dev/spidev0.0 ]; then
+        ok "/dev/spidev0.0 appeared after modprobe"
+    else
+        warn "/dev/spidev0.0 still missing. Check DTS overlay."
+    fi
 fi
 
 # â”€â”€ 3. Build C sensor service â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -123,6 +128,7 @@ echo "  SPI device:    $(ls -l /dev/spidev0.0 2>/dev/null || echo 'NOT FOUND')"
 echo "  PRU firmware:  NOT REQUIRED for basic eQEP2 encoder test"
 echo "  sensor_service:$(ls -lh sensor_board/sensor_service 2>/dev/null || echo 'NOT BUILT')"
 echo "  Survey dir:    $(ls -ld $SURVEY_DIR 2>/dev/null || echo 'NOT FOUND')"
+echo "  GPSD:          $(command -v gpsd 2>/dev/null || echo 'NOT INSTALLED')"
 
 # Cloud URL check
 CLOUD_URL="${RAIL_CLOUD_URL:-NOT SET}"

@@ -36,8 +36,8 @@ if not rows:
 station_no = ""
 for row in rows:
     station_no = (
-        row.get("Station Code")
-        or row.get("Station No")
+        row.get("Station No")
+        or row.get("Station Code")
         or row.get("station_no")
         or row.get("stationCode")
         or row.get("station")
@@ -51,6 +51,11 @@ if station_no:
         row.setdefault("Station No", station_no)
         row.setdefault("station_no", station_no)
         row.setdefault("stationCode", station_no)
+        # Legacy files may contain the full data-entry summary here. The
+        # cloud database accepts a short reference while the dedicated CSV
+        # columns retain the complete station and feature information.
+        if len(str(row.get("Reference Point", "")).strip()) > 64:
+            row["Reference Point"] = station_no[:64]
 
 payload = json.dumps({
     "filename": os.path.basename(csv_path),

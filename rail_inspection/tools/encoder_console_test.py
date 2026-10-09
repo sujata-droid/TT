@@ -10,7 +10,9 @@ import sys
 import time
 
 
-PRU_DMEM_PHYS = 0x4A300000
+# PRUSS shared RAM.  PRU0 data RAM starts with the remoteproc resource table,
+# so the firmware publishes the encoder control block here instead.
+PRU_DMEM_PHYS = 0x4A310000
 PRU_MAP_SIZE = mmap.PAGESIZE
 PRU_STRUCT = struct.Struct("<iIII")
 COUNT_COOKIE = 0xA5A5A5A5
@@ -28,8 +30,9 @@ def read_block(mem, base_offset):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--wheel-diameter-mm", type=float, default=250.0)
-    parser.add_argument("--ppr", type=int, default=400)
+    parser.add_argument("--wheel-diameter-mm", type=float, default=50.0)
+    parser.add_argument("--ppr", type=int, default=400,
+                        help="encoder cycles per channel per revolution (400 gives 1600 counts/rev with 4X decoding)")
     parser.add_argument("--sample-hz", type=float, default=10.0)
     parser.add_argument("--max-delta", type=int, default=0,
                         help="ignore count jumps larger than this between displayed samples")
@@ -46,8 +49,10 @@ def main():
     if args.max_delta < 0:
         raise SystemExit("--max-delta must be >= 0")
 
+    circumference_mm = 3.141592653589793 * args.wheel_diameter_mm
     counts_per_rev = args.ppr * 4.0
-    mm_per_count = (3.141592653589793 * args.wheel_diameter_mm) / counts_per_rev
+    # One quadrature count represents this many millimetres of wheel travel.
+    mm_per_count = circumference_mm / counts_per_rev
     sample_period = 1.0 / args.sample_hz
 
     with open("/dev/mem", "r+b", buffering=0) as handle:
@@ -60,7 +65,7 @@ def main():
             zero_count = None
             start = time.time()
             print("PRU encoder console test")
-            print(f"ppr={args.ppr} counts_per_rev={counts_per_rev:.0f} wheel_diameter_mm={args.wheel_diameter_mm:.2f}")
+            print(f"ppr_per_channel={args.ppr} decode=4X counts_per_rev={counts_per_rev:.0f} wheel_diameter_mm={args.wheel_diameter_mm:.2f}")
             print(f"mm_per_count={mm_per_count:.6f}")
             print("Fields: elapsed_s count delta dir chainage_m pru_status sample_us")
             while True:
@@ -86,7 +91,8 @@ def main():
                 else:
                     direction = "STOP"
 
-                chainage_m = (count * mm_per_count) / 1000.0
+                distance_mm = count * mm_per_count
+                chainage_m = distance_mm / 1000.0
                 print(
                     f"{elapsed:8.3f}s  count={count:10d}  delta={delta:6d}  "
                     f"dir={direction:4s}  chainage_m={chainage_m:10.5f}  "

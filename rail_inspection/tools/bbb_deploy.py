@@ -278,6 +278,14 @@ PY
 
 def configure_lte(args):
     client = connect()
+    sftp = client.open_sftp()
+    local_root = Path(__file__).resolve().parents[1]
+    for relative in ("tools/configure_airtel_lte.sh", "tools/quectel_ecm_connect.py"):
+        local_path = local_root / relative
+        remote_path = f"{REMOTE_ROOT}/{relative}"
+        sftp_mkdirs(sftp, posixpath.dirname(remote_path))
+        sftp.put(str(local_path), remote_path)
+    sftp.close()
     sudo_run(
         client,
         f"cd {shell_quote(REMOTE_ROOT)} && APN={shell_quote(args.apn)} sh tools/configure_airtel_lte.sh",

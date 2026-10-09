@@ -30,4 +30,4 @@ else
 fi
 
 echo "[ENC] Launch test with:"
-echo "sudo python3 $(cd "$(dirname "$0")" && pwd)/tools/encoder_eqep_console_test.py --ppr 400 --wheel-diameter-mm 250"
+echo "sudo python3 $(cd "$(dirname "$0")" && pwd)/tools/encoder_eqep_console_test.py --ppr 400 --wheel-diameter-mm 50"

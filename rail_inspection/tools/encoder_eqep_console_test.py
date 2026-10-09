@@ -23,8 +23,9 @@ def write_text(path: Path, value: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--eqep-path", default=str(EQEP2_PATH))
-    parser.add_argument("--wheel-diameter-mm", type=float, default=250.0)
-    parser.add_argument("--ppr", type=int, default=400)
+    parser.add_argument("--wheel-diameter-mm", type=float, default=50.0)
+    parser.add_argument("--ppr", type=int, default=400,
+                        help="encoder cycles per channel per revolution (400 gives 1600 counts/rev with 4X decoding)")
     parser.add_argument("--sample-hz", type=float, default=10.0)
     parser.add_argument("--duration", type=float, default=0.0, help="0 means run until Ctrl+C")
     args = parser.parse_args()
@@ -63,7 +64,7 @@ def main() -> int:
 
     print("eQEP encoder console test")
     print(f"path={eqep}")
-    print(f"ppr={args.ppr} counts_per_rev={counts_per_rev:.0f} wheel_diameter_mm={args.wheel_diameter_mm:.2f}")
+    print(f"ppr_per_channel={args.ppr} decode=4X counts_per_rev={counts_per_rev:.0f} wheel_diameter_mm={args.wheel_diameter_mm:.2f}")
     print(f"mm_per_count={mm_per_count:.6f}")
     try:
         print(f"eqep_period={read_text(period)}")

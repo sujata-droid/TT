@@ -22,8 +22,8 @@
 #ifndef RESOURCE_TABLE_EMPTY_H_
 #define RESOURCE_TABLE_EMPTY_H_
 
-#include <stdint.h>
 
+#include <stdint.h>
 /* Standard remoteproc resource table header */
 struct resource_table {
     uint32_t ver;           /* Version: must be 1                 */

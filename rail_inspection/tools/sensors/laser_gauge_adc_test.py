@@ -25,14 +25,25 @@ def clamp(value: float, lo: float, hi: float) -> float:
 def main() -> None:
     parser = argparse.ArgumentParser(description="HG-C1200 laser gauge ADC test")
     parser.add_argument("--adc-path", default=ADC_PATH)
-    parser.add_argument("--adc-max-raw", type=float, default=3072.0)
+    parser.add_argument("--adc-max-raw", type=float, default=4095.0)
     parser.add_argument("--laser-min-mm", type=float, default=160.0)
     parser.add_argument("--laser-max-mm", type=float, default=0.0)
     parser.add_argument("--laser-zero-mm", type=float, default=80.0)
     parser.add_argument("--laser-zero-raw", type=float, default=-1.0, help="ADC count that represents nominal gauge; -1 auto-zeroes from first sample")
     parser.add_argument("--laser-mpc", type=float, default=(0.0 - 160.0) / 3072.0, help="Laser mm per ADC count in offset mode")
     parser.add_argument("--nominal-gauge-mm", type=float, default=NOMINAL_GAUGE_MM)
-    parser.add_argument("--output-mode", choices=("deviation", "absolute"), default="deviation", help="deviation prints 0 at the auto-zero/reference point")
+    parser.add_argument("--output-mode", choices=("laser_window", "deviation", "absolute"), default="laser_window",
+                        help="laser_window maps Panasonic +80/0/-80 to physical 120/200/280 mm")
+    parser.add_argument("--display-min-mm", type=float, default=120.0,
+                        help="physical distance corresponding to Panasonic +80")
+    parser.add_argument("--display-max-mm", type=float, default=280.0,
+                        help="physical distance corresponding to Panasonic -80")
+    parser.add_argument("--raw-at-plus80", type=float, default=2957.5,
+                        help="ADC raw value measured while the Panasonic display reads +80")
+    parser.add_argument("--raw-at-zero", type=float, default=1365.0,
+                        help="ADC raw value measured while the Panasonic display reads 0")
+    parser.add_argument("--raw-at-minus80", type=float, default=0.0,
+                        help="ADC raw value measured while the Panasonic display reads -80")
     parser.add_argument("--gauge-min-mm", type=float, default=NOMINAL_GAUGE_MM - 25.0)
     parser.add_argument("--gauge-max-mm", type=float, default=NOMINAL_GAUGE_MM + 50.0)
     parser.add_argument("--factor", type=float, default=1.0)
@@ -49,8 +60,10 @@ def main() -> None:
         f"zero={args.laser_zero_mm:.1f} sign={args.sign} factor={args.factor:.3f}",
         flush=True,
     )
-    print("Rule: reference laser value -> UI 0.00; lower laser value -> positive UI deviation", flush=True)
-    print("Fields: raw ratio laser_mm gauge_deviation_mm ui_gauge_mm", flush=True)
+    print(f"Rule: raw={args.raw_at_plus80:.1f} (+80) -> {args.display_min_mm:.0f} mm, "
+          f"raw={args.raw_at_zero:.1f} (0) -> {(args.display_min_mm + args.display_max_mm) / 2.0:.0f} mm, "
+          f"raw={args.raw_at_minus80:.1f} (-80) -> {args.display_max_mm:.0f} mm", flush=True)
+    print("Fields: raw ratio laser_span_mm gauge_deviation_mm track_gauge_mm", flush=True)
 
     zero_raw = args.laser_zero_raw
     sample_count = 0
@@ -71,14 +84,27 @@ def main() -> None:
         laser_mm = args.laser_min_mm + ratio * (args.laser_max_mm - args.laser_min_mm)
         laser_mm = clamp(laser_mm, 0.0, 160.0)
         
-        has_ref = (args.laser_zero_raw >= 0.0) or (zero_raw >= 15.0)
-        if not has_ref or raw < 15 or raw > 3060:
+        has_ref = args.output_mode == "laser_window" or (args.laser_zero_raw >= 0.0) or (zero_raw >= 15.0)
+        if not has_ref or (args.output_mode != "laser_window" and (raw < 15 or raw > 3060)):
             gauge_deviation = 0.0
             display_mm = 0.0
         else:
             ref_laser = args.laser_min_mm + (zero_raw / args.adc_max_raw) * (args.laser_max_mm - args.laser_min_mm)
             gauge_deviation = (ref_laser - laser_mm) * args.factor
-            if args.output_mode == "absolute":
+            if args.output_mode == "laser_window":
+                span_plus_to_zero = args.raw_at_plus80 - args.raw_at_zero
+                span_zero_to_minus = args.raw_at_zero - args.raw_at_minus80
+                display_center_mm = (args.display_min_mm + args.display_max_mm) / 2.0
+                if span_plus_to_zero <= 0.0 or span_zero_to_minus <= 0.0 or \
+                        raw < args.raw_at_minus80 or raw > args.raw_at_plus80:
+                    display_mm = 0.0
+                elif raw >= args.raw_at_zero:
+                    display_mm = display_center_mm + (args.raw_at_zero - raw) * \
+                        (display_center_mm - args.display_min_mm) / span_plus_to_zero
+                else:
+                    display_mm = display_center_mm + (args.raw_at_zero - raw) * \
+                        (args.display_max_mm - display_center_mm) / span_zero_to_minus
+            elif args.output_mode == "absolute":
                 display_mm = laser_mm * args.factor
             else:
                 display_mm = gauge_deviation

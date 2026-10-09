@@ -11,7 +11,7 @@ Sensor map:
   Gauge Pot(TRS100)→ ADC  → /sys/bus/iio/devices/iio:device0/in_voltage0_raw
   Inclinometer     → SPI  → /dev/spidev1.0  (Murata SCL3300)
   GNSS             → UART → /dev/ttyS4      (u-blox NEO-M8P-2)
-  LTE              → ETH  → eth1            (cdc_ether)
+  LTE              → USB  → usb2            (Quectel ECM / cdc_ether)
   Display          → HDMI → omapdrm / xrandr
 """
 
@@ -196,7 +196,7 @@ _DEF = {
     "csv_dir":   DEFAULT_CSV_DIR,
     "hl_sec":    30,
     "server":    "8.8.8.8",
-    "lte_iface": "eth1",
+    "lte_iface": "usb2",
     "encoder":   {"scale": 1.0,  "factor": 1.0, "calibrated": False},
     "adc":       {"zero": 2048,  "mpc": 0.0684, "factor": 1.0, "calibrated": False},
     "incl":      {"offset": 0.0, "factor": 1.0, "calibrated": False},
@@ -215,6 +215,12 @@ def load_cfg():
                         d[k].setdefault(kk, vv)
             if os.environ.get("RAIL_CSV_DIR"):
                 d["csv_dir"] = os.environ["RAIL_CSV_DIR"]
+            # Early installations used eth1 in the sample configuration.  The
+            # Quectel EC200U exposed by this BBB is a CDC-ECM device named usb2.
+            # Migrate that stale default automatically when the real interface
+            # is present, rather than reporting a permanently empty signal bar.
+            if d.get("lte_iface") == "eth1" and os.path.exists("/sys/class/net/usb2"):
+                d["lte_iface"] = "usb2"
             return d
         except Exception:
             pass
@@ -970,15 +976,30 @@ class SensorThread(QThread):
             laser_max_mm = float(os.environ.get("RAIL_LASER_MAX_MM", 0.0))
             laser_zero_mm = float(os.environ.get("RAIL_LASER_ZERO_MM", 80.0))
             laser_zero_raw = float(os.environ.get("RAIL_LASER_ZERO_RAW", -1.0))
-            adc_max_raw = float(os.environ.get("RAIL_ADC_MAX_RAW", 3072.0))
+            adc_max_raw = float(os.environ.get("RAIL_ADC_MAX_RAW", 4095.0))
             laser_auto_zero = int(os.environ.get("RAIL_LASER_AUTO_ZERO", 1)) != 0
+            laser_display_min_mm = float(os.environ.get("RAIL_LASER_DISPLAY_MIN_MM", 120.0))
+            laser_display_max_mm = float(os.environ.get("RAIL_LASER_DISPLAY_MAX_MM", 280.0))
+            laser_display_offset_mm = float(os.environ.get("RAIL_LASER_DISPLAY_OFFSET_MM", 120.0))
+            laser_raw_at_plus80 = float(os.environ.get("RAIL_LASER_RAW_AT_PLUS80", 2957.5))
+            laser_raw_at_zero = float(os.environ.get("RAIL_LASER_RAW_AT_ZERO", 1365.0))
+            laser_raw_at_minus80 = float(os.environ.get("RAIL_LASER_RAW_AT_MINUS80", 0.0))
+            if laser_display_min_mm > laser_display_max_mm:
+                laser_display_min_mm, laser_display_max_mm = laser_display_max_mm, laser_display_min_mm
             
             if laser_auto_zero and (not hasattr(self, "_laser_zero_raw") or self._laser_zero_raw < 15.0):
                 if raw >= 15:
                     self._laser_zero_raw = float(raw)
                 
-            has_ref = (hasattr(self, "_laser_zero_raw") and self._laser_zero_raw >= 0.0) or laser_zero_raw >= 0.0
-            if not has_ref or raw < 15 or raw > 3060:
+            output_mode = os.environ.get("RAIL_GAUGE_OUTPUT_MODE", "absolute")
+            # laser_window is an absolute distance display and does not use a
+            # startup reference. The legacy deviation modes still require one.
+            has_ref = output_mode == "laser_window" or \
+                (hasattr(self, "_laser_zero_raw") and self._laser_zero_raw >= 0.0) or \
+                laser_zero_raw >= 0.0
+            # The calibrated laser window deliberately includes raw=0: it is
+            # the measured Panasonic -80 endpoint, not an invalid ADC value.
+            if not has_ref or (output_mode != "laser_window" and (raw < 15 or raw > 3060)):
                 gauge = 0.0
             else:
                 if hasattr(self, "_laser_zero_raw") and self._laser_zero_raw >= 0.0:
@@ -991,8 +1012,21 @@ class SensorThread(QThread):
                 curr_laser = laser_min_mm + ratio * (laser_max_mm - laser_min_mm)
                 curr_laser = max(0.0, min(160.0, curr_laser))
                 
-                output_mode = os.environ.get("RAIL_GAUGE_OUTPUT_MODE", "absolute")
-                if output_mode == "absolute":
+                if output_mode == "laser_window":
+                    span_plus_to_zero = laser_raw_at_plus80 - laser_raw_at_zero
+                    span_zero_to_minus = laser_raw_at_zero - laser_raw_at_minus80
+                    display_center_mm = (laser_display_min_mm + laser_display_max_mm) / 2.0
+                    # Three-point calibration: +80 -> 120, 0 -> 200, -80 -> 280.
+                    if span_plus_to_zero <= 0.0 or span_zero_to_minus <= 0.0 or \
+                            raw < laser_raw_at_minus80 or raw > laser_raw_at_plus80:
+                        gauge = 0.0
+                    elif raw >= laser_raw_at_zero:
+                        gauge = display_center_mm + (laser_raw_at_zero - raw) * \
+                            (display_center_mm - laser_display_min_mm) / span_plus_to_zero
+                    else:
+                        gauge = display_center_mm + (laser_raw_at_zero - raw) * \
+                            (laser_display_max_mm - display_center_mm) / span_zero_to_minus
+                elif output_mode == "absolute":
                     gauge = curr_laser * adc_factor
                     gauge = max(0.0, min(160.0, gauge))
                 else:
@@ -1065,19 +1099,40 @@ class NetThread(QThread):
             self.sleep(15)
 
     def _lte(self):
-        iface = self.cfg.get("lte_iface", "eth1")
-        if _sysfs(f"/sys/class/net/{iface}/operstate", "down") == "up": return 3
-        if _sysfs("/sys/class/net/ppp0/operstate", "down") in {"up", "unknown"}: return 3
-        if _sysfs("/sys/class/net/usb2/operstate",     "down") == "up": return 3
-        if _sysfs("/sys/class/net/eth1/operstate",     "down") == "up": return 3
-        if _sysfs("/sys/class/net/eth0/operstate",     "down") == "up": return 2
+        # A carrier signal is not the same as an administratively-UP network
+        # interface.  In particular, EC200U ECM creates usb2 before it has
+        # registered on the mobile network.  Only show LTE bars after that
+        # interface has carrier; show one amber bar while it is acquiring an IP.
+        preferred = self.cfg.get("lte_iface", "usb2")
+        candidates = [preferred, "usb2", "wwan0", "ppp0", "eth1"]
+        seen = set()
+        for iface in candidates:
+            if iface in seen:
+                continue
+            seen.add(iface)
+            base = f"/sys/class/net/{iface}"
+            if not os.path.exists(base):
+                continue
+            carrier = _sysfs(f"{base}/carrier", "0")
+            state = _sysfs(f"{base}/operstate", "down")
+            if carrier == "1" or (iface == "ppp0" and state in {"up", "unknown"}):
+                try:
+                    result = subprocess.run(
+                        ["ip", "-4", "addr", "show", "dev", iface],
+                        capture_output=True, text=True, timeout=2)
+                    if "inet " in result.stdout:
+                        return 3
+                except Exception:
+                    pass
+                return 1
         return 0 if not HW_SIM else 3
 
     def _ping(self):
         if HW_SIM: return True
         try:
             r = subprocess.run(
-                ["ping", "-c", "1", "-W", "2", self.cfg.get("server", "8.8.8.8")],
+            ["ping", "-c", "1", "-W", "2", "-I",
+             self.cfg.get("lte_iface", "usb2"), self.cfg.get("server", "8.8.8.8")],
                 capture_output=True, timeout=5)
             return r.returncode == 0
         except Exception:
@@ -1090,19 +1145,34 @@ class NetThread(QThread):
 STATION_NAME = "BLR"
 
 _FIELDS = [
-    "epoch_time",
-    "reference_value",
-    "reference_type",
-    "latitude",
-    "longitude",
-    "cross_level",
-    "chainage",
-    "twist",
-    "tilt",
-    "tilt_cord_length",
-    "station_no",
-    "track_feature",
-    "track_feature_location",
+    "Sample No",
+    "Date & Time",
+    "Name",
+    "Designation",
+    "Station No",
+    "Station Code",
+    "Chainage",
+    "Loop/Line Siding",
+    "Turn-out No",
+    "Curve No",
+    "Level Crossing No",
+    "Hectometer Post",
+    "Bridge (Start)",
+    "Bridge (End)",
+    "Level Crossing (LC) In",
+    "Level Crossing (LC) Out",
+    "Kilometer Post (KM)",
+    "Points & Crossing (P&C)",
+    "Curve-In",
+    "Curve Out",
+    "OHE Mast (OHEM) Location",
+    "Switch Expansion Joint (SEJ)",
+    "Latitude",
+    "Longitude",
+    "Distance",
+    "Gauge",
+    "Crosslevel",
+    "Twist",
 ]
 
 
@@ -1139,18 +1209,36 @@ class CSVLogger:
     def write(self, d):
         if not self._w: return
         cross = d.get("cross", 0)
+        station_no = self._station_values.get("Station No", self._station)
         row = {
-            "epoch_time":       int(time.time()),
-            "reference_type":   self._ref_type,
-            "reference_value":  self._ref_value,
-            "latitude":         d.get("lat",   0),
-            "longitude":        d.get("lon",   0),
-            "cross_level":      cross,
-            "chainage":         d.get("dist",  0),
-            "twist":            d.get("twist", 0),
-            "tilt":             cross,
-            "tilt_cord_length": d.get("dist",  0),
-            "station_no":       self._station_values.get("Station No", ""),
+            "Sample No": self.count + 1,
+            "Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
+            "Name": "",
+            "Designation": "",
+            "Station No": station_no,
+            "Station Code": self._station_values.get("Station Code", station_no),
+            "Chainage": d.get("dist", 0),
+            "Loop/Line Siding": "",
+            "Turn-out No": "",
+            "Curve No": "",
+            "Level Crossing No": "",
+            "Hectometer Post": "",
+            "Bridge (Start)": "",
+            "Bridge (End)": "",
+            "Level Crossing (LC) In": "",
+            "Level Crossing (LC) Out": "",
+            "Kilometer Post (KM)": "",
+            "Points & Crossing (P&C)": "",
+            "Curve-In": "",
+            "Curve Out": "",
+            "OHE Mast (OHEM) Location": "",
+            "Switch Expansion Joint (SEJ)": "",
+            "Latitude": d.get("lat", 0),
+            "Longitude": d.get("lon", 0),
+            "Distance": d.get("dist", 0),
+            "Gauge": "",
+            "Crosslevel": cross,
+            "Twist": d.get("twist", 0),
         }
         self._rows.append((time.time(), row))
         self._w.writerow(row)
@@ -2033,8 +2121,8 @@ class LTECal(QWidget):
         ir = QHBoxLayout()
         ir.addWidget(_lbl("Interface:", "#888"))
         self._iface = PresetTiles(
-            ["eth0", "eth1", "usb0", "wwan0"],
-            selected=cfg.get("lte_iface", "eth1"), color=CYAN)
+            ["usb2", "wwan0", "ppp0", "eth1", "eth0"],
+            selected=cfg.get("lte_iface", "usb2"), color=CYAN)
         ir.addWidget(self._iface, 1)
         lay.addLayout(ir)
 
@@ -2043,7 +2131,7 @@ class LTECal(QWidget):
             ("IP ADDRESSES",  self._ip,     "BC"),
             ("PING TEST",     self._ping,   "BC"),
             ("SHOW ROUTES",   self._routes, "BC"),
-            ("nmcli STATUS",  self._nmcli,  "BC"),
+            ("MODEM STATUS",  self._nmcli,  "BC"),
         ]):
             b = _btn(lbl, nm, 50)
             b.clicked.connect(fn)
@@ -2066,15 +2154,24 @@ class LTECal(QWidget):
 
     def _ping(self):
         srv = self.cfg.get("server", "8.8.8.8")
+        iface = self._iface.value()
         self._term.run(
-            f"echo '# ping -c 4 -W 2 {srv}' && ping -c 4 -W 2 {srv} 2>&1")
+            f"echo '# ping -I {iface} -c 4 -W 2 {srv}' && "
+            f"ping -I {iface} -c 4 -W 2 {srv} 2>&1")
 
     def _routes(self):
         self._term.run("echo '# ip route show' && ip route show 2>&1")
 
     def _nmcli(self):
+        iface = self._iface.value()
         cmd = (
-            "echo '# nmcli device status' && nmcli device status 2>&1"
+            f"echo '# {iface} modem state' && "
+            f"ip -br link show {iface} 2>&1 && "
+            f"echo '# carrier (1=registered link)' && "
+            f"cat /sys/class/net/{iface}/carrier 2>&1 && "
+            f"echo '# IPv4 address' && ip -4 addr show dev {iface} 2>&1 && "
+            f"echo '# route through modem' && ip route show dev {iface} 2>&1 && "
+            "echo '# NetworkManager' && nmcli device status 2>&1"
         ) if not HW_SIM else (
             "echo '# [SIM] nmcli device status' && "
             "printf 'DEVICE  TYPE      STATE      CONNECTION\\n"
@@ -2477,22 +2574,11 @@ class StationParamsWidget(QFrame):
         return {k: f.value() for k, f in self._fields.items()}
 
 
-TRACK_FEATURES = [
-    "Bridge (Start)",
-    "Bridge (End)",
-    "Level Crossing (LC) In",
-    "Level Crossing (LC) Out",
-    "Kilometer Post (KM)",
-    "Points & Crossing (P&C)",
-    "Curve-In",
-    "Curve Out",
-    "OHE Mast (OHEM) Location",
-    "Switch Expansion Joint (SEJ)",
-]
+FEATURE_FIELDS = []
 
 
-class TrackFeaturesWidget(QFrame):
-    """Operator-entered locations for the Annexure 1 track features."""
+class FeatureLocationWidget(QFrame):
+    """Legacy feature-entry panel retained but not used in exported records."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("Panel")
@@ -2504,41 +2590,10 @@ class TrackFeaturesWidget(QFrame):
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(9)
-
-        title = QLabel("TRACK FEATURES")
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet(
-            f"color:{HEADER_ACCENT}; font-size:12pt; font-weight:bold;"
-            " letter-spacing:1px; background:transparent; border:none; padding:4px 0;")
-        root.addWidget(title)
-
-        label_style = (
-            "color:#5B6575; font-size:10.5pt; font-weight:600;"
-            " background:transparent; border:none;")
-        for feature in TRACK_FEATURES:
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(6)
-            label = QLabel(feature)
-            label.setFixedWidth(132)
-            label.setMinimumHeight(36)
-            label.setWordWrap(True)
-            label.setStyleSheet(label_style)
-            field = TouchTextField("Tap to enter", field_title=feature)
-            field.setFixedHeight(32)
-            self._fields[feature] = field
-            row.addWidget(label)
-            row.addWidget(field, 1)
-            root.addLayout(row)
         root.addStretch()
 
     def get_values(self):
-        values = {feature: field.value() for feature, field in self._fields.items()}
-        entered = [(feature, value) for feature, value in values.items() if value]
-        values["Track Feature"] = "; ".join(feature for feature, _ in entered)
-        values["Track Feature Location"] = " / ".join(
-            f"{feature}: {value}" for feature, value in entered)
-        return values
+        return {}
 
 
 class DataEntryPage(QWidget):
@@ -2581,8 +2636,8 @@ class DataEntryPage(QWidget):
         self._station_params = StationParamsWidget()
         panels_l.addWidget(self._station_params, 1)
 
-        self._track_features = TrackFeaturesWidget()
-        panels_l.addWidget(self._track_features, 1)
+        self._feature_panel = FeatureLocationWidget()
+        panels_l.addWidget(self._feature_panel, 1)
 
         self._measurements = QFrame()
         self._measurements.setObjectName("Panel")
@@ -2628,7 +2683,7 @@ class DataEntryPage(QWidget):
     def get_data(self):
         return {
             "station": self._station_params.get_values(),
-            "track_features": self._track_features.get_values(),
+            "feature_fields": self._feature_panel.get_values(),
             "parameters": {key: tw.get_rows() for key, tw in self._tables.items()},
         }
 

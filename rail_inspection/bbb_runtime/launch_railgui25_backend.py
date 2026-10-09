@@ -38,8 +38,8 @@ QUEUE_FILE = LOG_DIR / "cloud_queue.json"
 CSV_FIELDS = [
     "Sample No",
     "Date & Time",
-    "Reference Type",
-    "Reference Point",
+    "Name",
+    "Designation",
     "Station No",
     "Station Code",
     "Chainage",
@@ -48,16 +48,22 @@ CSV_FIELDS = [
     "Curve No",
     "Level Crossing No",
     "Hectometer Post",
-    "Name",
-    "Designation",
-    *gui_app.TRACK_FEATURES,
+    "Bridge (Start)",
+    "Bridge (End)",
+    "Level Crossing (LC) In",
+    "Level Crossing (LC) Out",
+    "Kilometer Post (KM)",
+    "Points & Crossing (P&C)",
+    "Curve-In",
+    "Curve Out",
+    "OHE Mast (OHEM) Location",
+    "Switch Expansion Joint (SEJ)",
     "Latitude",
     "Longitude",
     "Distance",
     "Gauge",
-    "Crossover",
-    "Absolute Tilt",
-    "Cumulative Tilt",
+    "Crosslevel",
+    "Twist",
 ]
 STATION_REF_PRIORITY = [
     ("Station No", "Station"),
@@ -130,9 +136,6 @@ def _write_cloud_status(ok: bool, message: str, csv_path: str = "", queued: bool
 def _build_payload(csv_path: str):
     with open(csv_path, newline="") as handle:
         rows = list(gui_app.csv.DictReader(handle))
-    for row in rows:
-        row.pop("Track Feature", None)
-        row.pop("Track Feature Location", None)
     station_no = ""
     for row in rows:
         station_no = (
@@ -150,13 +153,6 @@ def _build_payload(csv_path: str):
             row.setdefault("Station No", station_no)
             row.setdefault("station_no", station_no)
             row.setdefault("stationCode", station_no)
-            # Older CSVs stored every data-entry field in Reference Point.
-            # The cloud database reserves this summary field for a short
-            # reference; the complete station and track-feature data remains
-            # available in the dedicated CSV columns.
-            reference_point = str(row.get("Reference Point", "")).strip()
-            if len(reference_point) > 64:
-                row["Reference Point"] = station_no[:64]
     body = json.dumps({
         "filename": os.path.basename(csv_path),
         "station_no": station_no,
@@ -362,8 +358,8 @@ class BufferedCSVLogger(gui_app.CSVLogger):
         row = {
             "Sample No": self.count + 1,
             "Date & Time": gui_app.datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
-            "Reference Type": self._ref_type or "",
-            "Reference Point": self._ref_value or "",
+            "Name": str(self._station_values.get("Name", "")),
+            "Designation": str(self._station_values.get("Designation", "")),
             "Station No": str(self._station_values.get("Station No", "")),
             "Station Code": str(self._station_values.get("Station Code", "")),
             "Chainage": str(self._station_values.get("Chainage", "")),
@@ -372,20 +368,23 @@ class BufferedCSVLogger(gui_app.CSVLogger):
             "Curve No": str(self._station_values.get("Curve No", "")),
             "Level Crossing No": str(self._station_values.get("Level Crossing No", "")),
             "Hectometer Post": str(self._station_values.get("Hectometer Post", "")),
-            "Name": str(self._station_values.get("Name", "")),
-            "Designation": str(self._station_values.get("Designation", "")),
-            "Track Feature": str(self._station_values.get("Track Feature", "")),
-            "Track Feature Location": str(self._station_values.get("Track Feature Location", "")),
+            "Bridge (Start)": str(self._station_values.get("Bridge (Start)", "")),
+            "Bridge (End)": str(self._station_values.get("Bridge (End)", "")),
+            "Level Crossing (LC) In": str(self._station_values.get("Level Crossing (LC) In", "")),
+            "Level Crossing (LC) Out": str(self._station_values.get("Level Crossing (LC) Out", "")),
+            "Kilometer Post (KM)": str(self._station_values.get("Kilometer Post (KM)", "")),
+            "Points & Crossing (P&C)": str(self._station_values.get("Points & Crossing (P&C)", "")),
+            "Curve-In": str(self._station_values.get("Curve-In", "")),
+            "Curve Out": str(self._station_values.get("Curve Out", "")),
+            "OHE Mast (OHEM) Location": str(self._station_values.get("OHE Mast (OHEM) Location", "")),
+            "Switch Expansion Joint (SEJ)": str(self._station_values.get("Switch Expansion Joint (SEJ)", "")),
             "Latitude": f"{float(d.get('lat', 0.0)):.5f}",
             "Longitude": f"{float(d.get('lon', 0.0)):.5f}",
             "Distance": f"{float(d.get('dist', 0.0)):.2f}",
             "Gauge": f"{float(d.get('gauge', 0.0)):.0f}",
-            "Crossover": f"{float(cross):.0f}",
-            "Absolute Tilt": f"{float(cross):.0f}",
-            "Cumulative Tilt": f"{float(twist):.0f}",
+            "Crosslevel": f"{float(cross):.0f}",
+            "Twist": f"{float(twist):.0f}",
         }
-        for feature in gui_app.TRACK_FEATURES:
-            row[feature] = str(self._station_values.get(feature, ""))
         self._rows.append((time.time(), row))
         self._w.writerow(row)
         self._unflushed += 1
@@ -467,7 +466,22 @@ class RuntimeNetThread(gui_app.NetThread):
             with urllib.request.urlopen(request, timeout=5) as response:
                 return response.status == 200
         except Exception:
-            return False
+            # The BBB's older OpenSSL build cannot always negotiate TLS with
+            # the cloud host.  The top bar is an LTE indicator, so retain an
+            # online state when the modem itself can reach the internet.
+            try:
+                result = subprocess.run(
+                    [
+                        "ping", "-c", "1", "-W", "2", "-I",
+                        self.cfg.get("lte_iface", "usb2"), "1.1.1.1",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+                return result.returncode == 0
+            except Exception:
+                return False
 
 
 class RuntimeInclinCal(gui_app.QWidget):
@@ -668,7 +682,7 @@ def optimized_entry_push(self, d):
 def _extract_station_reference(entry_page):
     try:
         values = entry_page._station_params.get_values()
-        values.update(entry_page._track_features.get_values())
+        values.update(getattr(entry_page, "_feature_panel", {}).get_values() if hasattr(entry_page, "_feature_panel") else {})
     except Exception:
         return "", "", {}
     values = {k: str(v).strip() for k, v in values.items()}
@@ -778,9 +792,9 @@ def patched_data_entry_init(original_init):
     def wrapper(self):
         original_init(self)
         _runtime_tune_station_params(self)
-        track_features = getattr(self, "_track_features", None)
-        if track_features is not None:
-            for field in getattr(track_features, "_fields", {}).values():
+        feature_panel = getattr(self, "_feature_panel", None)
+        if feature_panel is not None:
+            for field in getattr(feature_panel, "_fields", {}).values():
                 field.setFixedHeight(32)
         root = self.layout()
         if root is None or root.count() < 3:

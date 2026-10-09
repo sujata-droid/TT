@@ -11,6 +11,10 @@ services:
         value: 3.11.9
       - key: STORAGE_DIR
         value: /var/data/rail_surveys
+      - key: DATABASE_SSL
+        value: "true"
+      - key: DATABASE_URL
+        sync: false
     disk:
       name: rail-surveys
       mountPath: /var/data

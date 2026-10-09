@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 export RAIL_ENCODER_PPR="${RAIL_ENCODER_PPR:-400}"
-export RAIL_WHEEL_DIAMETER_MM="${RAIL_WHEEL_DIAMETER_MM:-250}"
+export RAIL_WHEEL_DIAMETER_MM="${RAIL_WHEEL_DIAMETER_MM:-50}"
 export PYTHONDONTWRITEBYTECODE=1
 
 if [ "$(id -u)" -eq 0 ]; then
@@ -15,7 +15,7 @@ fi
 
 echo "== Rotary encoder console test =="
 echo "root=$ROOT_DIR"
-echo "ppr=$RAIL_ENCODER_PPR"
+echo "ppr_per_channel=$RAIL_ENCODER_PPR (4X decode: $((RAIL_ENCODER_PPR * 4)) counts/rev)"
 echo "wheel_diameter_mm=$RAIL_WHEEL_DIAMETER_MM"
 echo
 

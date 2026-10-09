@@ -21,6 +21,7 @@ STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 CSV_FIELDS = [
     "Sample No",
     "Date & Time",
+    "Name",
     "Designation",
     "Station No",
     "Station Code",
@@ -54,6 +55,7 @@ _schema_ready = False
 DB_RECORD_FIELDS = [
     ("sample_no", "Sample No"),
     ("recorded_at", "Date & Time"),
+    ("name", "Name"),
     ("designation", "Designation"),
     ("station_no", "Station No"),
     ("station_code", "Station Code"),
@@ -112,30 +114,46 @@ def _ensure_db_schema():
                         survey_id INTEGER NOT NULL REFERENCES surveys(id) ON DELETE CASCADE,
                         sample_no INTEGER,
                         recorded_at TIMESTAMPTZ,
-                        name VARCHAR(128), designation VARCHAR(128),
-                        station_no VARCHAR(64), station_code VARCHAR(64),
-                        chainage DOUBLE PRECISION, loop_line_siding VARCHAR(64),
-                        turnout_no VARCHAR(64), curve_no VARCHAR(64),
-                        level_crossing_no VARCHAR(64), hectometer_post VARCHAR(64),
-                        track_feature TEXT, track_feature_location TEXT,
-                        bridge_start VARCHAR(128), bridge_end VARCHAR(128),
-                        level_crossing_lc_in VARCHAR(128), level_crossing_lc_out VARCHAR(128),
-                        kilometer_post VARCHAR(128), points_crossing VARCHAR(128),
-                        curve_in VARCHAR(128), curve_out VARCHAR(128),
-                        ohe_mast_location VARCHAR(128), switch_expansion_joint VARCHAR(128),
-                        latitude DOUBLE PRECISION, longitude DOUBLE PRECISION,
-                        distance DOUBLE PRECISION, gauge DOUBLE PRECISION,
-                        crosslevel DOUBLE PRECISION, twist DOUBLE PRECISION,
-                        reference_type VARCHAR(64), reference_point VARCHAR(64),
-                        crossover DOUBLE PRECISION, absolute_tilt DOUBLE PRECISION,
-                        cumulative_tilt DOUBLE PRECISION
+                        name VARCHAR(128),
+                        designation VARCHAR(128),
+                        station_no VARCHAR(64),
+                        station_code VARCHAR(64),
+                        chainage DOUBLE PRECISION,
+                        loop_line_siding VARCHAR(64),
+                        turnout_no VARCHAR(64),
+                        curve_no VARCHAR(64),
+                        level_crossing_no VARCHAR(64),
+                        hectometer_post VARCHAR(64),
+                        bridge_start VARCHAR(128),
+                        bridge_end VARCHAR(128),
+                        level_crossing_lc_in VARCHAR(128),
+                        level_crossing_lc_out VARCHAR(128),
+                        kilometer_post VARCHAR(128),
+                        points_crossing VARCHAR(128),
+                        curve_in VARCHAR(128),
+                        curve_out VARCHAR(128),
+                        ohe_mast_location VARCHAR(128),
+                        switch_expansion_joint VARCHAR(128),
+                        latitude DOUBLE PRECISION,
+                        longitude DOUBLE PRECISION,
+                        distance DOUBLE PRECISION,
+                        gauge DOUBLE PRECISION,
+                        crosslevel DOUBLE PRECISION,
+                        twist DOUBLE PRECISION
                     );
                     ALTER TABLE survey_records
+                        ADD COLUMN IF NOT EXISTS sample_no INTEGER,
+                        ADD COLUMN IF NOT EXISTS recorded_at TIMESTAMPTZ,
                         ADD COLUMN IF NOT EXISTS name VARCHAR(128),
                         ADD COLUMN IF NOT EXISTS designation VARCHAR(128),
                         ADD COLUMN IF NOT EXISTS station_no VARCHAR(64),
-                        ADD COLUMN IF NOT EXISTS track_feature TEXT,
-                        ADD COLUMN IF NOT EXISTS track_feature_location TEXT,
+                        ADD COLUMN IF NOT EXISTS station_code VARCHAR(64),
+                        ADD COLUMN IF NOT EXISTS chainage DOUBLE PRECISION,
+                        ADD COLUMN IF NOT EXISTS loop_line_siding VARCHAR(64),
+                        ADD COLUMN IF NOT EXISTS turnout_no VARCHAR(64),
+                        ADD COLUMN IF NOT EXISTS curve_no VARCHAR(64),
+                        ADD COLUMN IF NOT EXISTS level_crossing_no VARCHAR(64),
+                        ADD COLUMN IF NOT EXISTS hectometer_post VARCHAR(64),
                         ADD COLUMN IF NOT EXISTS bridge_start VARCHAR(128),
                         ADD COLUMN IF NOT EXISTS bridge_end VARCHAR(128),
                         ADD COLUMN IF NOT EXISTS level_crossing_lc_in VARCHAR(128),
@@ -146,6 +164,10 @@ def _ensure_db_schema():
                         ADD COLUMN IF NOT EXISTS curve_out VARCHAR(128),
                         ADD COLUMN IF NOT EXISTS ohe_mast_location VARCHAR(128),
                         ADD COLUMN IF NOT EXISTS switch_expansion_joint VARCHAR(128),
+                        ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION,
+                        ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION,
+                        ADD COLUMN IF NOT EXISTS distance DOUBLE PRECISION,
+                        ADD COLUMN IF NOT EXISTS gauge DOUBLE PRECISION,
                         ADD COLUMN IF NOT EXISTS crosslevel DOUBLE PRECISION,
                         ADD COLUMN IF NOT EXISTS twist DOUBLE PRECISION;
                 """)
@@ -195,10 +217,10 @@ def _store_rows_in_db(filename, rows):
             columns = [
                 "survey_id", "sample_no", "recorded_at", "name", "designation", "station_no", "station_code",
                 "chainage", "loop_line_siding", "turnout_no", "curve_no", "level_crossing_no", "hectometer_post",
-                "track_feature", "track_feature_location", "bridge_start", "bridge_end", "level_crossing_lc_in",
-                "level_crossing_lc_out", "kilometer_post", "points_crossing", "curve_in", "curve_out",
+                "bridge_start", "bridge_end", "level_crossing_lc_in", "level_crossing_lc_out",
+                "kilometer_post", "points_crossing", "curve_in", "curve_out",
                 "ohe_mast_location", "switch_expansion_joint", "latitude", "longitude", "distance", "gauge",
-                "crosslevel", "twist", "reference_type", "reference_point",
+                "crosslevel", "twist",
             ]
             placeholders = ", ".join(["%s"] * len(columns))
             query = f"INSERT INTO survey_records ({', '.join(columns)}) VALUES ({placeholders})"
@@ -211,7 +233,6 @@ def _store_rows_in_db(filename, rows):
                     _number(_row_value(row, "Chainage")), _row_value(row, "Loop/Line Siding"),
                     _row_value(row, "Turn-out No", "Turnout No"), _row_value(row, "Curve No"),
                     _row_value(row, "Level Crossing No"), _row_value(row, "Hectometer Post"),
-                    _row_value(row, "Track Feature"), _row_value(row, "Track Feature Location"),
                     _row_value(row, "Bridge (Start)"), _row_value(row, "Bridge (End)"),
                     _row_value(row, "Level Crossing (LC) In"), _row_value(row, "Level Crossing (LC) Out"),
                     _row_value(row, "Kilometer Post (KM)"), _row_value(row, "Points & Crossing (P&C)"),
@@ -219,9 +240,8 @@ def _store_rows_in_db(filename, rows):
                     _row_value(row, "OHE Mast (OHEM) Location"), _row_value(row, "Switch Expansion Joint (SEJ)"),
                     _number(_row_value(row, "Latitude", "Lattitude")), _number(_row_value(row, "Longitude")),
                     _number(_row_value(row, "Distance")), _number(_row_value(row, "Gauge")),
-                    _number(_row_value(row, "Crosslevel", "Crossover")),
-                    _number(_row_value(row, "Twist", "Cumulative Tilt")),
-                    _row_value(row, "Reference Type"), _row_value(row, "Reference Point"),
+                    _number(_row_value(row, "Crosslevel")),
+                    _number(_row_value(row, "Twist")),
                 ))
             return survey_id
 
@@ -242,8 +262,8 @@ def _db_records(station=""):
         SELECT sr.survey_id, {fields},
                COALESCE(sr.station_no, s.station_code) AS station_no,
                COALESCE(sr.station_code, s.station_code) AS station_code,
-               COALESCE(sr.crosslevel, sr.crossover) AS crosslevel,
-               COALESCE(sr.twist, sr.cumulative_tilt) AS twist
+               sr.crosslevel,
+               sr.twist
         FROM survey_records sr JOIN surveys s ON s.id = sr.survey_id
         {where}
         ORDER BY sr.recorded_at ASC NULLS LAST, sr.sample_no ASC, sr.id ASC
@@ -388,16 +408,11 @@ def _csv_path(filename: str) -> Path:
     return path
 
 
-EXCLUDED_CSV_FIELDS = {"Track Feature", "Track Feature Location"}
-
-
 def _ordered_fields(rows: List[Mapping[str, object]]) -> List[str]:
     fields = [field for field in CSV_FIELDS if any(field in row for row in rows)]
     extras = []
     for row in rows:
         for key in row.keys():
-            if key in EXCLUDED_CSV_FIELDS:
-                continue
             if key not in fields and key not in extras:
                 extras.append(key)
     return fields + extras
@@ -405,7 +420,7 @@ def _ordered_fields(rows: List[Mapping[str, object]]) -> List[str]:
 
 def _write_csv(path: Path, rows: List[Mapping[str, object]]) -> None:
     cleaned_rows = [
-        {key: value for key, value in row.items() if key not in EXCLUDED_CSV_FIELDS}
+        {key: value for key, value in row.items() if key in CSV_FIELDS or key not in set(CSV_FIELDS)}
         for row in rows
     ]
     fields = _ordered_fields(cleaned_rows)
@@ -419,7 +434,7 @@ def _read_csv(path: Path) -> List[dict]:
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     return [
-        {key: value for key, value in row.items() if key not in EXCLUDED_CSV_FIELDS}
+        {key: value for key, value in row.items() if key in CSV_FIELDS or key not in set(CSV_FIELDS)}
         for row in rows
     ]
 
@@ -467,7 +482,7 @@ def _session_info(path: Path, serial_no: int) -> dict:
         "name": path.name,
         "date_time": started_at.strftime("%d-%m-%Y %H:%M:%S"),
         "date": started_at.date(),
-        "type": _first_value(first, "Reference Type", "reference_type") or "Survey",
+        "type": "Survey",
         "station": _first_value(first, "Station No", "station_no", "Station Code", "station", "Station"),
         "rows": len(rows),
         "size_kb": f"{path.stat().st_size / 1024:.1f}",

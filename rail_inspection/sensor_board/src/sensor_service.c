@@ -34,10 +34,12 @@
 #define TWIST_HISTORY_MAX    200
 #define STATUS_CHECK_SECS    5
 #define CL_FILTER_TAPS       8
-#define PRU_DMEM_PHYS        0x4A300000u
+/* PRUSS shared RAM: encoder_pru0.c publishes its live control block here. */
+#define PRU_DMEM_PHYS        0x4A310000u
 #define PRU_MAP_SIZE         4096u
+/* 400 A-channel cycles/rev; PRU 4X quadrature decoding = 1600 counts/rev. */
 #define ENCODER_DEFAULT_PPR  400.0
-#define ENCODER_DEFAULT_WHEEL_DIAMETER_MM 250.0
+#define ENCODER_DEFAULT_WHEEL_DIAMETER_MM 50.0
 #define ENCODER_COUNT_COOKIE 0xA5A5A5A5u
 #define ENCODER_MAX_DELTA_DEFAULT 0
 #define ADC_PATH_DEFAULT "/sys/bus/iio/devices/iio:device0/in_voltage0_raw"
@@ -46,11 +48,19 @@
 #define GAUGE_FACTOR_DEFAULT 1.0
 #define GAUGE_MIN_MM_DEFAULT (GAUGE_MM - 25.0)
 #define GAUGE_MAX_MM_DEFAULT (GAUGE_MM + 50.0)
-#define GAUGE_ADC_MAX_RAW_DEFAULT 3072.0
+#define GAUGE_ADC_MAX_RAW_DEFAULT 4095.0
 #define LASER_MIN_MM_DEFAULT 160.0
 #define LASER_MAX_MM_DEFAULT 0.0
 #define LASER_ZERO_MM_DEFAULT 80.0
-#define LASER_AUTO_ZERO_DEFAULT 1
+#define LASER_GAUGE_CENTER_MM_DEFAULT 200.0
+#define LASER_DISPLAY_MIN_MM_DEFAULT 120.0
+#define LASER_DISPLAY_MAX_MM_DEFAULT 280.0
+#define LASER_DISPLAY_OFFSET_MM_DEFAULT 120.0
+#define LASER_RAW_AT_PLUS80_DEFAULT 2957.5
+#define LASER_RAW_AT_ZERO_DEFAULT 1365.0
+#define LASER_RAW_AT_MINUS80_DEFAULT 0.0
+/* The 120..280 mm Track Gauge window uses fixed calibration endpoints. */
+#define LASER_AUTO_ZERO_DEFAULT 0
 #define TWIST_SAMPLE_STEP_DEFAULT TWIST_SAMPLE_STEP_M
 #define TWIST_BASELINE_DEFAULT    TWIST_BASELINE_M
 
@@ -77,6 +87,15 @@ typedef struct {
     int laser_sign;
     int laser_auto_zero;
     int gauge_output_deviation;
+    int laser_output_gauge_scale;
+    double laser_gauge_center_mm;
+    int laser_output_distance_window;
+    double laser_display_min_mm;
+    double laser_display_max_mm;
+    double laser_display_offset_mm;
+    double laser_raw_at_plus80;
+    double laser_raw_at_zero;
+    double laser_raw_at_minus80;
     double last_laser_mm;
     int healthy;
 } GaugeADC;
@@ -98,6 +117,15 @@ static GaugeADC g_gauge = {
     .laser_sign = -1,
     .laser_auto_zero = LASER_AUTO_ZERO_DEFAULT,
     .gauge_output_deviation = 0,
+    .laser_output_gauge_scale = 0,
+    .laser_gauge_center_mm = LASER_GAUGE_CENTER_MM_DEFAULT,
+    .laser_output_distance_window = 0,
+    .laser_display_min_mm = LASER_DISPLAY_MIN_MM_DEFAULT,
+    .laser_display_max_mm = LASER_DISPLAY_MAX_MM_DEFAULT,
+    .laser_display_offset_mm = LASER_DISPLAY_OFFSET_MM_DEFAULT,
+    .laser_raw_at_plus80 = LASER_RAW_AT_PLUS80_DEFAULT,
+    .laser_raw_at_zero = LASER_RAW_AT_ZERO_DEFAULT,
+    .laser_raw_at_minus80 = LASER_RAW_AT_MINUS80_DEFAULT,
     .last_laser_mm = LASER_ZERO_MM_DEFAULT,
     .healthy = 0,
 };
@@ -217,12 +245,14 @@ static void gauge_init(void) {
     if (raw_path && *raw_path) {
         snprintf(g_gauge.path, sizeof(g_gauge.path), "%s", raw_path);
     }
-    g_gauge.source_laser_adc = (source && (
+    /* The Track Gauge hardware is the Panasonic laser; retain an explicit
+     * RAIL_GAUGE_SOURCE=adc override only for legacy potentiometer testing. */
+    g_gauge.source_laser_adc = (!source || !*source ||
         strcmp(source, "laser") == 0 ||
         strcmp(source, "laser_adc") == 0 ||
         strcmp(source, "hg-c1200") == 0 ||
         strcmp(source, "hgc1200") == 0
-    ));
+    );
     g_gauge.zero_raw = env_double("RAIL_GAUGE_ZERO_RAW", GAUGE_ZERO_DEFAULT);
     g_gauge.mm_per_count = env_double("RAIL_GAUGE_MPC", GAUGE_MPC_DEFAULT);
     g_gauge.factor = env_double("RAIL_GAUGE_FACTOR", GAUGE_FACTOR_DEFAULT);
@@ -238,20 +268,41 @@ static void gauge_init(void) {
     g_gauge.laser_sign = env_int("RAIL_LASER_SIGN", -1) < 0 ? -1 : 1;
     g_gauge.laser_auto_zero = env_int("RAIL_LASER_AUTO_ZERO", LASER_AUTO_ZERO_DEFAULT) != 0;
     g_gauge.gauge_output_deviation = (out_mode && (strcmp(out_mode, "deviation") == 0 || strcmp(out_mode, "offset") == 0));
+    g_gauge.laser_output_gauge_scale = (out_mode && strcmp(out_mode, "laser_gauge") == 0);
+    g_gauge.laser_gauge_center_mm = env_double_any("RAIL_LASER_GAUGE_CENTER_MM",
+                                                    LASER_GAUGE_CENTER_MM_DEFAULT);
+    /* Default to the Track Gauge window when no launcher environment exists. */
+    g_gauge.laser_output_distance_window = (!out_mode || !*out_mode ||
+                                            strcmp(out_mode, "laser_window") == 0);
+    g_gauge.laser_display_min_mm = env_double_any("RAIL_LASER_DISPLAY_MIN_MM",
+                                                   LASER_DISPLAY_MIN_MM_DEFAULT);
+    g_gauge.laser_display_max_mm = env_double_any("RAIL_LASER_DISPLAY_MAX_MM",
+                                                   LASER_DISPLAY_MAX_MM_DEFAULT);
+    g_gauge.laser_display_offset_mm = env_double_any("RAIL_LASER_DISPLAY_OFFSET_MM",
+                                                      LASER_DISPLAY_OFFSET_MM_DEFAULT);
+    g_gauge.laser_raw_at_plus80 = env_double_any("RAIL_LASER_RAW_AT_PLUS80",
+                                                  LASER_RAW_AT_PLUS80_DEFAULT);
+    g_gauge.laser_raw_at_zero = env_double_any("RAIL_LASER_RAW_AT_ZERO",
+                                                LASER_RAW_AT_ZERO_DEFAULT);
+    g_gauge.laser_raw_at_minus80 = env_double_any("RAIL_LASER_RAW_AT_MINUS80",
+                                                   LASER_RAW_AT_MINUS80_DEFAULT);
+    if (g_gauge.laser_display_min_mm > g_gauge.laser_display_max_mm) {
+        double tmp = g_gauge.laser_display_min_mm;
+        g_gauge.laser_display_min_mm = g_gauge.laser_display_max_mm;
+        g_gauge.laser_display_max_mm = tmp;
+    }
     if (g_gauge.min_mm > g_gauge.max_mm) {
         double tmp = g_gauge.min_mm;
         g_gauge.min_mm = g_gauge.max_mm;
         g_gauge.max_mm = tmp;
     }
-    if (g_gauge.laser_min_mm > g_gauge.laser_max_mm) {
-        double tmp = g_gauge.laser_min_mm;
-        g_gauge.laser_min_mm = g_gauge.laser_max_mm;
-        g_gauge.laser_max_mm = tmp;
-    }
     printf("[GAUGE] source=%s path=%s nominal=%.1f range=[%.1f, %.1f]\n",
            g_gauge.source_laser_adc ? "laser_adc" : "adc",
            g_gauge.path, (double)GAUGE_MM, g_gauge.min_mm, g_gauge.max_mm);
-    printf("[GAUGE] output_mode=%s\n", g_gauge.gauge_output_deviation ? "deviation_from_nominal" : "absolute_gauge_mm");
+    printf("[GAUGE] output_mode=%s\n", g_gauge.laser_output_distance_window ?
+           "laser_window_120_plus_laser_0_to_160_mm" : (g_gauge.laser_output_gauge_scale ?
+           "laser_gauge_120_to_280_mm" :
+           (g_gauge.gauge_output_deviation ? "deviation_from_nominal" : "absolute_gauge_mm")));
     if (g_gauge.source_laser_adc) {
         if (g_gauge.laser_auto_zero && g_gauge.laser_zero_raw < 0.0) {
             int raw = 0;
@@ -265,6 +316,12 @@ static void gauge_init(void) {
         printf("[GAUGE] laser range=[%.1f, %.1f] zero=%.2f sign=%d factor=%.3f adc_max=%.0f\n",
                g_gauge.laser_min_mm, g_gauge.laser_max_mm, g_gauge.laser_zero_mm,
                g_gauge.laser_sign, g_gauge.factor, g_gauge.adc_max_raw);
+        if (g_gauge.laser_output_distance_window) {
+            printf("[GAUGE] laser calibration: raw=%.1f (+80) -> %.0f mm, raw=%.1f (0) -> 200 mm, raw=%.1f (-80) -> %.0f mm\n",
+                   g_gauge.laser_raw_at_plus80, g_gauge.laser_display_min_mm,
+                   g_gauge.laser_raw_at_zero,
+                   g_gauge.laser_raw_at_minus80, g_gauge.laser_display_max_mm);
+        }
         if (g_gauge.laser_zero_raw >= 0.0) {
             printf("[GAUGE] laser offset mode zero_raw=%.0f mpc=%.6f mm/count\n",
                    g_gauge.laser_zero_raw, g_gauge.laser_mm_per_count);
@@ -309,7 +366,9 @@ static int gauge_read_mm(GaugeADC *gauge, float *gauge_mm_out) {
                 printf("[GAUGE] laser auto-zero locked raw=%d\n", raw);
             }
         }
-        if (gauge->laser_zero_raw < 0.0 || raw < 15 || raw > 3060) {
+        /* A fixed 80 mm reference is valid when auto-zero is disabled. */
+        if ((gauge->laser_auto_zero && gauge->laser_zero_raw < 0.0) ||
+            (!gauge->laser_output_distance_window && (raw < 15 || raw > 3060))) {
             output_mm = 0.0;
         } else {
             ratio = (double)raw / gauge->adc_max_raw;
@@ -320,14 +379,37 @@ static int gauge_read_mm(GaugeADC *gauge, float *gauge_mm_out) {
             if (laser_mm > 160.0) laser_mm = 160.0;
             gauge->last_laser_mm = laser_mm;
             
-            if (gauge->gauge_output_deviation) {
+            if (gauge->laser_output_distance_window) {
+                double span_plus_to_zero = gauge->laser_raw_at_plus80 - gauge->laser_raw_at_zero;
+                double span_zero_to_minus = gauge->laser_raw_at_zero - gauge->laser_raw_at_minus80;
+                double display_center_mm =
+                    (gauge->laser_display_min_mm + gauge->laser_display_max_mm) / 2.0;
+                /* Three-point calibration: +80 -> 120, 0 -> 200, -80 -> 280. */
+                if (span_plus_to_zero <= 0.0 || span_zero_to_minus <= 0.0 ||
+                    raw < gauge->laser_raw_at_minus80 || raw > gauge->laser_raw_at_plus80) {
+                    output_mm = 0.0;
+                } else if ((double)raw >= gauge->laser_raw_at_zero) {
+                    output_mm = display_center_mm +
+                        (gauge->laser_raw_at_zero - (double)raw) *
+                        (display_center_mm - gauge->laser_display_min_mm) / span_plus_to_zero;
+                } else {
+                    output_mm = display_center_mm +
+                        (gauge->laser_raw_at_zero - (double)raw) *
+                        (gauge->laser_display_max_mm - display_center_mm) / span_zero_to_minus;
+                }
+            } else if (gauge->gauge_output_deviation || gauge->laser_output_gauge_scale) {
                 double reference_laser;
+                double laser_deviation;
                 if (gauge->laser_zero_raw >= 0.0) {
                     reference_laser = gauge->laser_min_mm + (gauge->laser_zero_raw / gauge->adc_max_raw) * (gauge->laser_max_mm - gauge->laser_min_mm);
                 } else {
                     reference_laser = gauge->laser_zero_mm;
                 }
-                output_mm = (reference_laser - laser_mm) * gauge->factor;
+                laser_deviation = (reference_laser - laser_mm) * gauge->factor;
+                /* +80 laser deviation -> 120 mm; 0 -> 200 mm; -80 -> 280 mm. */
+                output_mm = gauge->laser_output_gauge_scale ?
+                            (gauge->laser_gauge_center_mm - laser_deviation) :
+                            laser_deviation;
             } else {
                 output_mm = laser_mm * gauge->factor;
                 if (output_mm < 0.0) output_mm = 0.0;
@@ -436,12 +518,22 @@ static int encoder_open(EncoderPRU *enc) {
 
     if (!enc) return -1;
 
+    /*
+     * RAIL_ENCODER_PPR is the encoder's per-channel cycles (pulses) per
+     * mechanical revolution, not the already-decoded quadrature count.
+     * A 400 PPR encoder therefore yields 400 * 4 = 1600 PRU counts/rev.
+     */
     ppr = env_double("RAIL_ENCODER_PPR", ENCODER_DEFAULT_PPR);
     wheel_diameter_mm = env_double("RAIL_WHEEL_DIAMETER_MM", ENCODER_DEFAULT_WHEEL_DIAMETER_MM);
     counts_per_rev = ppr * 4.0;
     enc->invert = env_int("RAIL_ENCODER_INVERT", 0) ? 1 : 0;
     enc->max_delta = env_int("RAIL_ENCODER_MAX_DELTA", ENCODER_MAX_DELTA_DEFAULT);
     if (enc->max_delta < 0) enc->max_delta = ENCODER_MAX_DELTA_DEFAULT;
+    /*
+     * Encoder distance calculation:
+     * circumference_mm = pi * wheel_diameter_mm
+     * distance_per_count_mm = circumference_mm / (PPR * 4)
+     */
     enc->mm_per_count = (M_PI * wheel_diameter_mm) / counts_per_rev;
 
     enc->mem_fd = open("/dev/mem", O_RDONLY | O_SYNC);
@@ -467,7 +559,7 @@ static int encoder_open(EncoderPRU *enc) {
     enc->count_check = (volatile uint32_t *)(enc->map + offset + 0x0Cu);
 
     printf("[ENC] PRU quadrature input enabled: P9_27=A, P9_30=B\n");
-    printf("[ENC] Geometry: ppr=%.0f counts_per_rev=%.0f wheel_diameter_mm=%.2f mm_per_count=%.6f invert=%d max_delta=%d\n",
+    printf("[ENC] Geometry: ppr_per_channel=%.0f decode=4X counts_per_rev=%.0f wheel_diameter_mm=%.2f mm_per_count=%.6f invert=%d max_delta=%d\n",
            ppr, counts_per_rev, wheel_diameter_mm, enc->mm_per_count, enc->invert, enc->max_delta);
     return 0;
 }
@@ -528,7 +620,11 @@ static int encoder_read(EncoderPRU *enc, int32_t *count_out, float *chainage_m_o
     enc->last_count = count;
     enc->have_last_count = 1;
     if (count_out) *count_out = count;
-    if (chainage_m_out) *chainage_m_out = (float)((count * enc->mm_per_count) / 1000.0);
+    if (chainage_m_out) {
+        double distance_mm = (double)count * enc->mm_per_count;
+        /* Shared frame/API names this field chainage_m, so convert mm to m. */
+        *chainage_m_out = (float)(distance_mm / 1000.0);
+    }
     if (sample_us_out) *sample_us_out = sample_us;
     return 0;
 }

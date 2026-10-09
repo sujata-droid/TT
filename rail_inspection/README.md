@@ -33,8 +33,13 @@ sudo pkill -9 sensor_service
 sudo pkill -9 python3
 sudo rm -f /dev/shm/rail_sensor_shm
 sudo bash setup_encoder_pru.sh
-sudo env RAIL_SCL_AXIS=X RAIL_ENCODER_PPR=400 RAIL_WHEEL_DIAMETER_MM=250 RAIL_ENCODER_INVERT=0 RAIL_SAMPLING_DISTANCE_M=0.25 RAIL_TWIST_BASE_M=3.0 ./sensor_board/sensor_service
+sudo env RAIL_SCL_AXIS=X RAIL_ENCODER_PPR=400 RAIL_WHEEL_DIAMETER_MM=50 RAIL_ENCODER_INVERT=0 RAIL_SAMPLING_DISTANCE_M=0.25 RAIL_TWIST_BASE_M=3.0 ./sensor_board/sensor_service
 ```
+
+`RAIL_ENCODER_PPR=400` is 400 cycles per channel per encoder revolution.
+The PRU uses 4X quadrature decoding, so the raw encoder count is exactly
+1600 counts per revolution. With a 1:1 encoder-to-wheel drive, that is also
+1600 counts per wheel revolution.
 
 Terminal 2:
 
