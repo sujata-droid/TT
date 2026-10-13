@@ -8,6 +8,10 @@ import os
 import struct
 import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from bbb_runtime.backend_bridge import compute_encoder_factor, encoder_distance_m
 
 
 # PRUSS shared RAM.  PRU0 data RAM starts with the remoteproc resource table,
@@ -38,21 +42,39 @@ def main():
                         help="ignore count jumps larger than this between displayed samples")
     parser.add_argument("--duration", type=float, default=0.0,
                         help="0 means run until Ctrl+C")
+    parser.add_argument("--calibrate-counts", type=int,
+                        help="calculate a calibration factor from this raw count delta")
+    parser.add_argument("--true-distance-m", type=float,
+                        help="measured travel distance; requires --calibrate-counts")
     args = parser.parse_args()
 
-    if os.geteuid() != 0:
-        raise SystemExit("Run with sudo so /dev/mem can be mapped.")
     if args.ppr <= 0:
         raise SystemExit("--ppr must be > 0")
     if args.sample_hz <= 0:
         raise SystemExit("--sample-hz must be > 0")
     if args.max_delta < 0:
         raise SystemExit("--max-delta must be >= 0")
+    if args.wheel_diameter_mm <= 0:
+        raise SystemExit("--wheel-diameter-mm must be > 0")
+    if (args.calibrate_counts is None) != (args.true_distance_m is None):
+        raise SystemExit("--calibrate-counts and --true-distance-m must be used together")
 
     circumference_mm = 3.141592653589793 * args.wheel_diameter_mm
     counts_per_rev = args.ppr * 4.0
     # One quadrature count represents this many millimetres of wheel travel.
     mm_per_count = circumference_mm / counts_per_rev
+    if args.calibrate_counts is not None:
+        factor = compute_encoder_factor(
+            args.calibrate_counts,
+            args.true_distance_m,
+            mm_per_count,
+        )
+        print(f"raw_counts={abs(args.calibrate_counts)}")
+        print(f"true_distance_m={args.true_distance_m:.3f}")
+        print(f"calibration_factor={factor:.6f}")
+        return
+    if os.geteuid() != 0:
+        raise SystemExit("Run with sudo so /dev/mem can be mapped.")
     sample_period = 1.0 / args.sample_hz
 
     with open("/dev/mem", "r+b", buffering=0) as handle:
@@ -91,8 +113,7 @@ def main():
                 else:
                     direction = "STOP"
 
-                distance_mm = count * mm_per_count
-                chainage_m = distance_mm / 1000.0
+                chainage_m = encoder_distance_m(count, mm_per_count)
                 print(
                     f"{elapsed:8.3f}s  count={count:10d}  delta={delta:6d}  "
                     f"dir={direction:4s}  chainage_m={chainage_m:10.5f}  "

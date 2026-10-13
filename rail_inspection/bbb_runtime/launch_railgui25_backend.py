@@ -252,9 +252,26 @@ class SharedMemorySensorThread(gui_app.SensorThread):
         self._bridge.close()
 
     def reset(self):
+        raw_total = self._raw_total
         super().reset()
+        self._raw_total = raw_total
         self._bridge.reset_display_reference()
         self._needs_zero = False
+
+    def begin_encoder_calibration(self):
+        return self._bridge.begin_encoder_calibration()
+
+    def encoder_calibration_readout(self, start_count):
+        return self._bridge.encoder_calibration_readout(start_count)
+
+    def finish_encoder_calibration(self, start_count, true_m):
+        result = self._bridge.finish_encoder_calibration(start_count, true_m)
+        gui_app.save_cfg(self.cfg)
+        return result
+
+    def set_encoder_factor(self, factor, calibrated=True):
+        self._bridge.set_encoder_factor(factor, calibrated)
+        gui_app.save_cfg(self.cfg)
 
     def _emit_fault(self, message: str) -> None:
         if message != self._last_fault:
@@ -278,6 +295,7 @@ class SharedMemorySensorThread(gui_app.SensorThread):
             try:
                 if self.active:
                     sample = self._bridge.next_display_sample()
+                    self._raw_total = int(sample["encoder_count"])
                     self.motion.emit(self._bridge.is_moving(sample))
                     self._emit_fault("" if sample["scl_ok"] else "SCL3300 backend not ready")
                     self.data_ready.emit(sample)
@@ -285,6 +303,7 @@ class SharedMemorySensorThread(gui_app.SensorThread):
                     # Keep the hardware path warm while STOP is selected, but
                     # do not update dashboard values or CSV samples.
                     frame = self._bridge.read_next_frame(require_new=True)
+                    self._raw_total = frame.encoder_count
                     self._emit_fault("" if frame.scl_ok else "SCL3300 backend not ready")
             except Exception as exc:
                 self._emit_fault(str(exc))
@@ -498,7 +517,7 @@ class RuntimeInclinCal(gui_app.QWidget):
         lay.setSpacing(12)
 
         lay.addWidget(gui_app._lbl(
-            "Shared-memory SCL3300 calibration for railway cross-level. Keep the trolley stationary on a known level before capturing zero.",
+            "Shared-memory SCL3300 inclination calibration. Keep the trolley stationary on a known level before capturing zero.",
             "#555", 9))
 
         self._status = gui_app._lbl("Status: ready", gui_app.AMBER, 9, True)
@@ -511,7 +530,7 @@ class RuntimeInclinCal(gui_app.QWidget):
         row.addWidget(gui_app._lbl("Persistent zero offset:", "#4A5568", 10, True))
         self._offset_s = gui_app.Stepper(
             cfg["incl"].get("offset", 0.0), step=0.01, dec=3,
-            lo=-500.0, hi=500.0, unit="mm", title="INCLINOMETER ZERO OFFSET")
+            lo=-500.0, hi=500.0, unit="mm", title="INCLINATION ZERO OFFSET")
         row.addWidget(self._offset_s, 1)
         lay.addLayout(row)
 
@@ -519,7 +538,7 @@ class RuntimeInclinCal(gui_app.QWidget):
         row.addWidget(gui_app._lbl("Calibration factor:", "#4A5568", 10, True))
         self._factor_s = gui_app.Stepper(
             cfg["incl"].get("factor", 1.0), step=0.001, dec=3,
-            lo=0.1, hi=5.0, unit="x", title="INCLINOMETER SCALE FACTOR")
+            lo=0.1, hi=5.0, unit="x", title="INCLINATION SCALE FACTOR")
         row.addWidget(self._factor_s, 1)
         lay.addLayout(row)
 
@@ -594,7 +613,7 @@ class RuntimeInclinCal(gui_app.QWidget):
             "calibrated": True,
         })
         gui_app.save_cfg(self.cfg)
-        self._status.setText("Status: inclinometer calibration saved")
+        self._status.setText("Status: inclination calibration saved")
         self.saved.emit("incl", self.cfg["incl"])
 
 
@@ -842,8 +861,8 @@ def patched_data_entry_init(original_init):
 
 
 def patched_calibration_page_init(original_init):
-    def wrapper(self, cfg):
-        original_init(self, cfg)
+    def wrapper(self, cfg, sensor=None):
+        original_init(self, cfg, sensor)
         for sc in self.findChildren(gui_app.QScrollArea):
             sc.setStyleSheet(
                 "QScrollArea{ border:none; background:#FFFFFF; }"
@@ -1267,9 +1286,9 @@ def apply_runtime_patches() -> None:
     gui_app.NumpadDialog = RuntimeNumpadDialog
     gui_app.InclinCal = RuntimeInclinCal
     gui_app._SENSORS = [
-        ("adc", "Potentiometer", gui_app.CYAN, gui_app.ADCCal),
-        ("incl", "Inclinometer", gui_app.AMBER, RuntimeInclinCal),
-        ("encoder", "Rotary Encoder", gui_app.NEON, gui_app.EncoderCal),
+        ("adc", "Track Gauge", gui_app.CYAN, gui_app.ADCCal),
+        ("incl", "Inclination", gui_app.AMBER, RuntimeInclinCal),
+        ("encoder", "Track Distance", gui_app.NEON, gui_app.EncoderCal),
     ]
     gui_app.SensorThread = SharedMemorySensorThread
     gui_app.CSVLogger = BufferedCSVLogger

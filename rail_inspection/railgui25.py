@@ -15,7 +15,7 @@ Sensor map:
   Display          → HDMI → omapdrm / xrandr
 """
 
-import sys, os, json, csv, time, random, subprocess
+import sys, os, json, csv, time, random, subprocess, hmac, math
 from datetime import datetime
 from pathlib import Path
 
@@ -192,18 +192,24 @@ QPushButton#SB:checked { border-color: #1B8A4C88; color: #1B8A4C; }
 # ─────────────────────────────────────────────────────────────────────────────
 CFG_PATH  = Path(__file__).parent / "rail_config.json"
 DEFAULT_CSV_DIR = os.environ.get("RAIL_CSV_DIR", "/home/debian/surveys")
+_ENCODER_PPR = float(os.environ.get("RAIL_ENCODER_PPR", "400"))
+_WHEEL_DIAMETER_MM = float(os.environ.get("RAIL_WHEEL_DIAMETER_MM", "50"))
+if _ENCODER_PPR <= 0 or _WHEEL_DIAMETER_MM <= 0:
+    raise ValueError("Encoder PPR and wheel diameter must both be greater than zero.")
+_ENCODER_SCALE_MM_PER_COUNT = math.pi * _WHEEL_DIAMETER_MM / (_ENCODER_PPR * 4.0)
 _DEF = {
     "csv_dir":   DEFAULT_CSV_DIR,
     "hl_sec":    30,
     "server":    "8.8.8.8",
     "lte_iface": "usb2",
-    "encoder":   {"scale": 1.0,  "factor": 1.0, "calibrated": False},
+    # Set this on the BBB with RAIL_CALIBRATION_PASSWORD, or store it in
+    # rail_config.json.  It is intentionally blank in a new installation.
+    "calibration_password": "",
+    "encoder":   {"scale": _ENCODER_SCALE_MM_PER_COUNT, "factor": 1.0, "calibrated": False},
     "adc":       {"zero": 2048,  "mpc": 0.0684, "factor": 1.0, "calibrated": False},
     "incl":      {"offset": 0.0, "factor": 1.0, "calibrated": False},
     "gnss":      {"ref_ch": 0.0, "calibrated": False},
 }
-
-
 def load_cfg():
     if CFG_PATH.exists():
         try:
@@ -213,8 +219,11 @@ def load_cfg():
                 if isinstance(v, dict):
                     for kk, vv in v.items():
                         d[k].setdefault(kk, vv)
+            d["encoder"]["scale"] = _ENCODER_SCALE_MM_PER_COUNT
             if os.environ.get("RAIL_CSV_DIR"):
                 d["csv_dir"] = os.environ["RAIL_CSV_DIR"]
+            if os.environ.get("RAIL_CALIBRATION_PASSWORD"):
+                d["calibration_password"] = os.environ["RAIL_CALIBRATION_PASSWORD"]
             # Early installations used eth1 in the sample configuration.  The
             # Quectel EC200U exposed by this BBB is a CDC-ECM device named usb2.
             # Migrate that stale default automatically when the real interface
@@ -949,6 +958,19 @@ class SensorThread(QThread):
         self.active = False
         self._dist  = 0.0
         self._lastc = 0
+        self._raw_total = 0
+
+    def begin_encoder_calibration(self):
+        raise RuntimeError("Encoder calibration is unavailable on this sensor backend.")
+
+    def encoder_calibration_readout(self, start_count):
+        raise RuntimeError("Encoder calibration is unavailable on this sensor backend.")
+
+    def finish_encoder_calibration(self, start_count, true_m):
+        raise RuntimeError("Encoder calibration is unavailable on this sensor backend.")
+
+    def set_encoder_factor(self, factor, calibrated=True):
+        raise RuntimeError("Encoder calibration is unavailable on this sensor backend.")
 
     def run(self):
         while True:
@@ -964,9 +986,10 @@ class SensorThread(QThread):
         cnt         = int(_sysfs(EQEP_PATH, "0"))
         delta       = cnt - self._lastc
         self._lastc = cnt
+        self._raw_total += delta
         enc_factor = self.cfg["encoder"].get("factor", 1.0)
         adc_factor = self.cfg["adc"].get("factor", 1.0)
-        self._dist += delta * self.cfg["encoder"]["scale"] * enc_factor / 1000.0
+        self._dist = self._raw_total * self.cfg["encoder"]["scale"] * enc_factor / 1000.0
         self.motion.emit(delta != 0)
         raw   = int(_sysfs(ADC_PATH, str(self.cfg["adc"]["zero"])))
         
@@ -1057,9 +1080,10 @@ class SensorThread(QThread):
 
     def _sim(self):
         enc_factor = self.cfg["encoder"].get("factor", 1.0)
+        self._raw_total += round(200.0 / self.cfg["encoder"]["scale"])
+        self._dist = self._raw_total * self.cfg["encoder"]["scale"] * enc_factor / 1000.0
         adc_factor = self.cfg["adc"].get("factor", 1.0)
         incl_factor = self.cfg["incl"].get("factor", 1.0)
-        self._dist += 0.2 * enc_factor
         self.motion.emit(True)
         cross = round(random.gauss(0, 0.25) * incl_factor, 2)
         
@@ -1080,7 +1104,9 @@ class SensorThread(QThread):
                 "speed": round(random.uniform(2.0, 8.0), 1)}
 
     def reset(self):
-        self._dist = 0.0; self._lastc = 0
+        self._dist = 0.0
+        self._lastc = 0
+        self._raw_total = 0
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1869,32 +1895,139 @@ class TerminalWidget(QWidget):
 class EncoderCal(QWidget):
     saved = pyqtSignal(str, dict)
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, sensor=None):
         super().__init__()
         self.cfg = cfg
+        self.sensor = sensor
+        self._start_raw = None
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 20, 20, 20)
-        lay.setSpacing(14)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
+        lay.addWidget(_lbl("ENCODER CALIBRATION", CYAN, 11, True))
+        self._info = _lbl("", "#1A2332", 10)
+        self._run = _lbl("", "#4A5568", 10)
+        self._msg = _lbl("", "#4A5568", 10)
+        for widget in (self._info, self._run, self._msg):
+            lay.addWidget(widget)
 
-        fr = QHBoxLayout()
-        fr.addWidget(_lbl("Calibration factor:", "#4A5568", 10, True))
-        self._factor_s = Stepper(cfg["encoder"].get("factor", 1.0), step=0.01, dec=3,
-                                 lo=0.001, hi=100.0, unit="x",
-                                 title="ENCODER CALIBRATION FACTOR")
-        fr.addWidget(self._factor_s, 1)
-        lay.addLayout(fr)
+        self._b_start = _btn("1. START RUN", "BC", 48)
+        self._b_end = _btn("2. END RUN  +  ENTER TRUE DISTANCE", "BG", 48)
+        self._b_manual = _btn("ENTER FACTOR MANUALLY", "BX", 44)
+        self._b_reset = _btn("RESET FACTOR TO 1.0000", "BX", 44)
+        for button in (self._b_start, self._b_end, self._b_manual, self._b_reset):
+            lay.addWidget(button)
+        self._b_end.setEnabled(False)
+        self._b_start.clicked.connect(self._start_run)
+        self._b_end.clicked.connect(self._end_run)
+        self._b_manual.clicked.connect(self._manual)
+        self._b_reset.clicked.connect(self._reset)
 
-        sv = _btn("SAVE CHANGES", "BA", 48)
-        sv.clicked.connect(self._do_save)
-        lay.addWidget(sv)
+        self._tmr = QTimer(self)
+        self._tmr.timeout.connect(self._tick)
+        self._tmr.start(500)
+        self._refresh()
         lay.addStretch()
 
-    def _do_save(self):
-        factor = self._factor_s.value()
-        self.cfg["encoder"].update({"factor": factor, "calibrated": True})
-        save_cfg(self.cfg)
-        self.saved.emit("encoder", self.cfg["encoder"])
+    def _enc(self):
+        return self.cfg["encoder"]
+
+    def _save_factor(self, factor, calibrated=True):
+        self.sensor.set_encoder_factor(factor, calibrated)
+        self.saved.emit("encoder", self._enc())
+
+    def _refresh(self):
+        enc = self._enc()
+        state = "CALIBRATED" if enc.get("calibrated") else "NOT CALIBRATED"
+        self._info.setText(
+            f"Factor {enc.get('factor', 1.0):.4f}   |   "
+            f"Scale {enc['scale']:.6f} mm/count   |   {state}"
+        )
+
+    def _tick(self):
+        if self._start_raw is None or self.sensor is None:
+            self._run.setText("")
+            return
+        try:
+            readout = self.sensor.encoder_calibration_readout(self._start_raw)
+        except RuntimeError as exc:
+            self._msg.setText(str(exc))
+            return
+        self._run.setText(
+            f"Run: {readout['raw_counts']} counts  =  "
+            f"{readout['distance_m']:.3f} m (as currently displayed)"
+        )
+
+    def _start_run(self):
+        if self.sensor is None:
+            self._msg.setText("Encoder sensor is unavailable.")
+            return
+        if not self.sensor.active:
+            self._msg.setText("Start the sensor/session first; encoder counts are read while it is running.")
+            return
+        try:
+            self._start_raw = self.sensor.begin_encoder_calibration()
+        except RuntimeError as exc:
+            self._msg.setText(str(exc))
+            return
+        self._b_end.setEnabled(True)
+        self._msg.setText("Move the trolley over a measured distance, then press END RUN.")
+
+    def _end_run(self):
+        if self._start_raw is None or self.sensor is None:
+            return
+        dialog = NumpadDialog(
+            "True distance", "0", decimals=3, min_val=0.0, max_val=1000.0,
+            unit="m", parent=self.window()
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        true_m = dialog.get_value()
+        try:
+            result = self.sensor.finish_encoder_calibration(self._start_raw, true_m)
+            old_factor = self._enc().get("factor", 1.0)
+        except ValueError as exc:
+            self._msg.setText(str(exc))
+            return
+        except RuntimeError as exc:
+            self._msg.setText(str(exc))
+            return
+        self._start_raw = None
+        self._b_end.setEnabled(False)
+        self.saved.emit("encoder", self._enc())
+        self._msg.setText(
+            f"Factor {old_factor:.4f} -> {result['factor']:.4f}   "
+            f"({result['raw_counts']} counts = {result['true_m']:.3f} m)"
+        )
+        self._refresh()
+
+    def _manual(self):
+        current = self._enc().get("factor", 1.0)
+        dialog = NumpadDialog(
+            "Calibration factor", f"{current:.4f}", decimals=4,
+            min_val=0.5, max_val=1.5, unit="x",
+            parent=self.window()
+        )
+        if dialog.exec_() == QDialog.Accepted and dialog.get_value() is not None:
+            factor = dialog.get_value()
+            try:
+                self._save_factor(factor)
+            except (ValueError, RuntimeError) as exc:
+                self._msg.setText(str(exc))
+                return
+            self._msg.setText(f"Factor set to {factor:.4f}")
+            self._refresh()
+
+    def _reset(self):
+        try:
+            self._save_factor(1.0, calibrated=False)
+        except (ValueError, RuntimeError) as exc:
+            self._msg.setText(str(exc))
+            return
+        self._start_raw = None
+        self._b_end.setEnabled(False)
+        self._msg.setText("Factor reset to 1.0000")
+        self._refresh()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1915,7 +2048,7 @@ class ADCCal(QWidget):
         fr.addWidget(_lbl("Calibration factor:", "#4A5568", 10, True))
         self._factor_s = Stepper(cfg["adc"].get("factor", 1.0), step=0.01, dec=3,
                                  lo=0.001, hi=100.0, unit="x",
-                                 title="POTENTIOMETER CALIBRATION FACTOR")
+                                 title="TRACK GAUGE CALIBRATION FACTOR")
         fr.addWidget(self._factor_s, 1)
         lay.addLayout(fr)
 
@@ -1949,7 +2082,7 @@ class InclinCal(QWidget):
         fr.addWidget(_lbl("Calibration factor:", "#4A5568", 10, True))
         self._factor_s = Stepper(cfg["incl"].get("factor", 1.0), step=0.01, dec=3,
                                  lo=0.001, hi=100.0, unit="x",
-                                 title="INCLINOMETER CALIBRATION FACTOR")
+                                 title="INCLINATION CALIBRATION FACTOR")
         fr.addWidget(self._factor_s, 1)
         lay.addLayout(fr)
 
@@ -2254,18 +2387,149 @@ class DisplayCal(QWidget):
 #  CALIBRATION PAGE
 # ═════════════════════════════════════════════════════════════════════════════
 _SENSORS = [
-    ("adc", "Potentiometer", CYAN, ADCCal),
-    ("incl", "Inclinometer", AMBER, InclinCal),
-    ("encoder", "Rotary Encoder", NEON, EncoderCal),
+    ("adc", "Track Gauge", CYAN, ADCCal),
+    ("incl", "Inclination", AMBER, InclinCal),
+    ("encoder", "Track Distance", NEON, EncoderCal),
 ]
+
+
+class CalibrationPasswordDialog(QDialog):
+    """Password-only gateway for sensor-calibration controls."""
+    def __init__(self, expected_password, parent=None):
+        super().__init__(parent)
+        self._expected_password = expected_password
+        self.setWindowTitle("Calibration Access")
+        self.setModal(True)
+        self.setWindowState(self.windowState() | Qt.WindowFullScreen)
+        self.setStyleSheet(
+            "QDialog { background:#FFFFFF; }")
+
+        screen = QApplication.primaryScreen()
+        screen_width = screen.availableGeometry().width() if screen else 1024
+        screen_height = screen.availableGeometry().height() if screen else 768
+        key_width = max(48, min(68, (screen_width - 200) // 10))
+        key_height = max(42, min(58, screen_height // 13))
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(24, 20, 24, 20)
+        outer.addStretch(1)
+        content = QWidget(self)
+        content.setMaximumWidth(900)
+        root = QVBoxLayout(content)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(16)
+        root.addStretch(1)
+        title = QLabel("SENSOR CALIBRATION")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(f"color:{AMBER}; font-size:22pt; font-weight:bold; letter-spacing:2px;")
+        root.addWidget(title)
+        prompt = _lbl("Enter the calibration password to continue.", "#5B6575", 14)
+        prompt.setAlignment(Qt.AlignCenter)
+        root.addWidget(prompt)
+
+        self._password = QLineEdit()
+        self._password.setEchoMode(QLineEdit.Password)
+        self._password.setPlaceholderText("Password")
+        self._password.setMinimumHeight(max(54, key_height))
+        self._password.setStyleSheet(
+            "QLineEdit { background:#F8FAFB; border:1.5px solid #C8D0DA; border-radius:8px;"
+            " padding:0 12px; color:#1A2332; font-size:18pt; }")
+        self._password.returnPressed.connect(self._unlock)
+        root.addWidget(self._password)
+
+        # Touchscreen keyboard: the QLineEdit remains masked at all times.
+        self._uppercase = False
+        self._letter_keys = []
+        keyboard = QVBoxLayout()
+        keyboard.setSpacing(8)
+        key_style = (
+            "QPushButton { background:#F8FAFB; border:1px solid #D8E1EB;"
+            " border-radius:7px; color:#334155; font-size:16pt; font-weight:700; }"
+            "QPushButton:pressed { background:#FFF3E0; border-color:#C06000; }")
+        for row_index, row_text in enumerate(("1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM")):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            for char in row_text:
+                display_char = char if row_index == 0 else char.lower()
+                key = QPushButton(display_char)
+                key.setFixedSize(key_width, key_height)
+                key.setStyleSheet(key_style)
+                if row_index == 0:
+                    key.clicked.connect(lambda _, value=char: self._append_key(value))
+                else:
+                    key.clicked.connect(lambda _, button=key: self._append_key(button.text()))
+                    self._letter_keys.append(key)
+                row.addWidget(key)
+            row.addStretch()
+            keyboard.addLayout(row)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        action_width = max(100, min(180, key_width * 2))
+        for text, width, action in (
+            ("SHIFT", action_width, self._toggle_case),
+            ("SPACE", action_width * 2, lambda: self._append_key(" ")),
+            ("CLEAR", action_width, self._password.clear),
+            ("⌫", action_width, self._delete_key),
+        ):
+            key = QPushButton(text)
+            key.setFixedSize(width, key_height)
+            key.setStyleSheet(key_style)
+            key.clicked.connect(action)
+            actions.addWidget(key)
+        actions.addStretch()
+        keyboard.addLayout(actions)
+        root.addLayout(keyboard)
+
+        self._error = QLabel("")
+        self._error.setAlignment(Qt.AlignCenter)
+        self._error.setStyleSheet(f"color:{RED}; font-size:9pt; font-weight:bold;")
+        root.addWidget(self._error)
+
+        buttons = QHBoxLayout()
+        back = _btn("← BACK", "BC", key_height, 220)
+        back.clicked.connect(self.reject)
+        unlock = _btn("UNLOCK", "BA", key_height, 220)
+        unlock.clicked.connect(self._unlock)
+        buttons.addWidget(back)
+        buttons.addStretch()
+        buttons.addWidget(unlock)
+        root.addLayout(buttons)
+        root.addStretch(1)
+        outer.addWidget(content)
+        outer.addStretch(1)
+        self._password.setFocus()
+
+    def _append_key(self, value):
+        self._password.setText(self._password.text() + value)
+        self._password.setFocus()
+
+    def _delete_key(self):
+        self._password.setText(self._password.text()[:-1])
+        self._password.setFocus()
+
+    def _toggle_case(self):
+        self._uppercase = not self._uppercase
+        for key in self._letter_keys:
+            key.setText(key.text().upper() if self._uppercase else key.text().lower())
+        self._password.setFocus()
+
+    def _unlock(self):
+        if not self._expected_password:
+            self._error.setText("Calibration password is not configured.")
+        elif hmac.compare_digest(self._password.text(), self._expected_password):
+            self.accept()
+        else:
+            self._password.clear()
+            self._error.setText("Incorrect password. Try again or tap Back.")
 
 
 class CalibrationPage(QWidget):
     sig_back = pyqtSignal()
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, sensor=None):
         super().__init__()
         self.cfg   = cfg
+        self.sensor = sensor
         self._btns = []
 
         root = QVBoxLayout(self)
@@ -2313,7 +2577,7 @@ class CalibrationPage(QWidget):
             nav_l.addWidget(btn, 1)
             self._btns.append((btn, label, color))
 
-            w = Cls(cfg)
+            w = Cls(cfg, sensor) if key == "encoder" else Cls(cfg)
             if hasattr(w, "saved"):
                 w.saved.connect(self._on_saved)
 
@@ -2365,10 +2629,11 @@ class CalibrationPage(QWidget):
                     "QPushButton:pressed{ background:#EEF3F8; }")
         self._stack.setCurrentIndex(idx)
 
-    def _on_saved(self, key, _):
+    def _on_saved(self, key, values):
         for i, (k, label, color, *_) in enumerate(_SENSORS):
             if k == key:
-                self._btns[i][0].setText("✓  " + label)
+                calibrated = values.get("calibrated", False) if isinstance(values, dict) else True
+                self._btns[i][0].setText(("✓  " if calibrated else "○  ") + label)
                 break
 
 
@@ -2574,11 +2839,22 @@ class StationParamsWidget(QFrame):
         return {k: f.value() for k, f in self._fields.items()}
 
 
-FEATURE_FIELDS = []
+FEATURE_FIELDS = [
+    "Bridge (Start)",
+    "Bridge (End)",
+    "Level Crossing (LC) In",
+    "Level Crossing (LC) Out",
+    "Kilometer Post (KM)",
+    "Points & Crossing (P&C)",
+    "Curve-In",
+    "Curve Out",
+    "OHE Mast (OHEM) Location",
+    "Switch Expansion Joint (SEJ)",
+]
 
 
 class FeatureLocationWidget(QFrame):
-    """Legacy feature-entry panel retained but not used in exported records."""
+    """Operator-entered locations for the track features in a survey."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("Panel")
@@ -2589,11 +2865,37 @@ class FeatureLocationWidget(QFrame):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(9)
+        root.setSpacing(6)
+
+        title = QLabel("TRACK FEATURES")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(
+            f"color:{HEADER_ACCENT}; font-size:12pt; font-weight:bold;"
+            " letter-spacing:1px; background:transparent; border:none; padding:4px 0;")
+        root.addWidget(title)
+
+        label_style = (
+            "color:#5B6575; font-size:10.5pt; font-weight:600;"
+            " background:transparent; border:none;")
+        for feature in FEATURE_FIELDS:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
+            label = QLabel(feature)
+            label.setFixedWidth(132)
+            label.setMinimumHeight(36)
+            label.setWordWrap(True)
+            label.setStyleSheet(label_style)
+            field = TouchTextField("Tap to enter", field_title=feature)
+            field.setFixedHeight(32)
+            self._fields[feature] = field
+            row.addWidget(label)
+            row.addWidget(field, 1)
+            root.addLayout(row)
         root.addStretch()
 
     def get_values(self):
-        return {}
+        return {feature: field.value() for feature, field in self._fields.items()}
 
 
 class DataEntryPage(QWidget):
@@ -3134,10 +3436,10 @@ class TrackApp(QWidget):
         self.dash.sig_toggle.connect(self._on_toggle)
         self.dash.sig_pause.connect(self._on_pause)
         self.dash.sig_entry.connect(lambda: self._goto(2))
-        self.dash.sig_cal.connect(lambda: self._goto(1))
+        self.dash.sig_cal.connect(self._request_calibration_access)
         self.stack.addWidget(self.dash)       # 0
 
-        self.cal = CalibrationPage(self.cfg)
+        self.cal = CalibrationPage(self.cfg, self.sensor)
         self.cal.sig_back.connect(lambda: self._goto(0))
         self.stack.addWidget(self.cal)        # 1
 
@@ -3173,6 +3475,16 @@ class TrackApp(QWidget):
 
     def _goto(self, idx):
         self.stack.setCurrentIndex(idx)
+
+    def _request_calibration_access(self):
+        """Open calibration only after a password-only authorization."""
+        expected_password = str(
+            os.environ.get("RAIL_CALIBRATION_PASSWORD")
+            or self.cfg.get("calibration_password", "")
+        )
+        dialog = CalibrationPasswordDialog(expected_password, self)
+        if dialog.exec_() == QDialog.Accepted:
+            self._goto(1)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)

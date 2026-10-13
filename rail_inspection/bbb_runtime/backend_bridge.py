@@ -3,6 +3,7 @@
 
 import json
 import math
+import math
 import mmap
 import os
 import select
@@ -49,6 +50,33 @@ MOTION_DIST_M = 0.05
 GPSD_HOST = os.environ.get("RAIL_GPSD_HOST", "127.0.0.1")
 GPSD_PORT = int(os.environ.get("RAIL_GPSD_PORT", "2947"))
 GPS_STALE_SECONDS = float(os.environ.get("RAIL_GPS_STALE_SECONDS", "30"))
+CAL_MIN_COUNTS = 5000
+CAL_FACTOR_MIN = 0.5
+CAL_FACTOR_MAX = 1.5
+
+
+def encoder_distance_m(raw_counts: int, scale_mm_per_count: float, factor: float = 1.0) -> float:
+    return int(raw_counts) * float(scale_mm_per_count) * float(factor) / 1000.0
+
+
+def compute_encoder_factor(raw_counts: int, true_m: float, scale_mm_per_count: float) -> float:
+    count_total = abs(int(raw_counts))
+    if count_total < CAL_MIN_COUNTS:
+        raise ValueError(
+            f"Run too short ({count_total} counts). Move at least {CAL_MIN_COUNTS} "
+            "counts (about 0.5 m); a 10 m run is better."
+        )
+    if not math.isfinite(float(true_m)) or true_m <= 0:
+        raise ValueError("True distance must be greater than 0.")
+    if not math.isfinite(float(scale_mm_per_count)) or scale_mm_per_count <= 0:
+        raise ValueError("Encoder scale must be greater than 0.")
+    factor = float(true_m) * 1000.0 / (count_total * float(scale_mm_per_count))
+    if not CAL_FACTOR_MIN <= factor <= CAL_FACTOR_MAX:
+        raise ValueError(
+            f"Factor {factor:.4f} is outside {CAL_FACTOR_MIN}-{CAL_FACTOR_MAX}. "
+            "Check the measured distance and that the wheel did not slip."
+        )
+    return factor
 
 
 def _rounded(value: float) -> float:
@@ -181,6 +209,7 @@ class SharedMemoryBridge:
         self._shm = None
         self._gps = GPSDReader()
         self._last_update_count = None
+        self._encoder_count = 0
         self._cross_hist: Deque[float] = deque(maxlen=CROSS_AVG_TAPS)
         self._twist_hist: Deque[float] = deque(maxlen=TWIST_AVG_TAPS)
         self._gauge_hist: Deque[float] = deque(maxlen=GAUGE_AVG_TAPS)
@@ -195,6 +224,7 @@ class SharedMemoryBridge:
             "speed": 0.0,
             "scl_ok": False,
             "encoder_ok": False,
+            "encoder_count": 0,
             "raw_cross_mm": 0.0,
             "raw_twist_mm_m": 0.0,
             "raw_gauge_mm": 0.0,
@@ -275,6 +305,7 @@ class SharedMemoryBridge:
                 continue
 
             self._last_update_count = update_count
+            self._encoder_count = int(enc_count)
             return RawFrame(
                 ts_us=ts_us,
                 cross_level_mm=float(cl_mm),
@@ -294,12 +325,12 @@ class SharedMemoryBridge:
         cross = (frame.cross_level_mm - float(incl.get("offset", 0.0))) * float(incl.get("factor", 1.0))
         twist = frame.twist_mm_per_m
         gauge = frame.gauge_mm
-        raw_dist = frame.chainage_m * float(enc.get("factor", 1.0))
+        raw_dist = encoder_distance_m(frame.encoder_count, float(enc.get("scale", 1.0)))
         if self._chainage_offset is None:
             self._chainage_offset = raw_dist
         # Show travelled distance from the session start regardless of
         # encoder direction; previously reverse motion was clipped to 0.0.
-        dist = abs(raw_dist - self._chainage_offset)
+        dist = abs(raw_dist - self._chainage_offset) * float(enc.get("factor", 1.0))
         return {
             "cross": cross,
             "twist": twist,
@@ -307,6 +338,41 @@ class SharedMemoryBridge:
             "dist": dist,
             "raw_dist_m": raw_dist,
         }
+
+    def begin_encoder_calibration(self) -> int:
+        return self._encoder_count
+
+    def encoder_calibration_readout(self, start_count: int) -> Dict[str, float]:
+        enc = self.cfg.get("encoder", {})
+        raw_counts = self._encoder_count - int(start_count)
+        return {
+            "raw_counts": abs(raw_counts),
+            "distance_m": abs(encoder_distance_m(
+                raw_counts,
+                float(enc.get("scale", 1.0)),
+                float(enc.get("factor", 1.0)),
+            )),
+            "factor": float(enc.get("factor", 1.0)),
+            "scale": float(enc.get("scale", 1.0)),
+            "calibrated": bool(enc.get("calibrated", False)),
+        }
+
+    def finish_encoder_calibration(self, start_count: int, true_m: float) -> Dict[str, float]:
+        raw_counts = self._encoder_count - int(start_count)
+        factor = compute_encoder_factor(
+            raw_counts,
+            true_m,
+            float(self.cfg["encoder"]["scale"]),
+        )
+        self.set_encoder_factor(factor)
+        return {"raw_counts": abs(raw_counts), "true_m": float(true_m), "factor": factor}
+
+    def set_encoder_factor(self, factor: float, calibrated: bool = True) -> None:
+        factor = float(factor)
+        if not math.isfinite(factor) or not CAL_FACTOR_MIN <= factor <= CAL_FACTOR_MAX:
+            raise ValueError(f"Encoder factor must be between {CAL_FACTOR_MIN} and {CAL_FACTOR_MAX}.")
+        self.cfg["encoder"]["factor"] = round(factor, 6)
+        self.cfg["encoder"]["calibrated"] = bool(calibrated)
 
     def calibrate_zero(self, seconds: float = ZERO_CAPTURE_SECONDS) -> float:
         samples: List[float] = []
@@ -369,6 +435,7 @@ class SharedMemoryBridge:
         self._display["gps_ok"] = gps["gps_ok"]
         self._display["scl_ok"] = frame.scl_ok
         self._display["encoder_ok"] = frame.encoder_ok
+        self._display["encoder_count"] = frame.encoder_count
         self._display["raw_cross_mm"] = cross
         self._display["raw_twist_mm_m"] = twist_raw
         self._display["raw_gauge_mm"] = values["gauge"]
