@@ -1514,7 +1514,11 @@ class TopBar(QWidget):
             self._bar_color = QColor("#FF9800");  self._net_col = QColor("#FF9800")
         else:
             self._bar_color = QColor("#EF5350");  self._net_col = QColor("#EF5350")
-        self._net_txt = "LTE" if cloud else "NO SYNC"
+        self._net_txt = "LTE" if bars > 0 else "NO LTE"
+        self.setToolTip(
+            ("LTE link connected" if bars > 0 else "LTE link unavailable")
+            + ("; internet reachable" if cloud else "; internet unavailable")
+        )
         self.update()
 
     def push_error(self, msg):
