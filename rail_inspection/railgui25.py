@@ -23,9 +23,9 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QFrame, QStackedWidget, QScrollArea,
     QFileDialog, QTextEdit, QSizePolicy, QDialog, QTableWidget,
-    QTableWidgetItem, QHeaderView, QComboBox, QLineEdit,
+    QTableWidgetItem, QHeaderView, QComboBox, QLineEdit, QMessageBox, QDateEdit, QCheckBox, QScroller,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QProcess, QPoint, QRect, QSize, QEvent
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QProcess, QPoint, QRect, QSize, QEvent, QDate
 from PyQt5.QtGui import (
     QPainter, QColor, QPen, QFont, QBrush, QLinearGradient, QPainterPath,
 )
@@ -184,6 +184,40 @@ QPushButton#SB {
     padding: 6px 8px; text-align: left;
 }
 QPushButton#SB:checked { border-color: #1B8A4C88; color: #1B8A4C; }
+
+/* CSV export page: a small, consistent action bar for the touchscreen. */
+QPushButton#CSVBack, QPushButton#CSVRefresh, QPushButton#CSVExport {
+    border-radius: 8px;
+    font-size: 10pt;
+    font-weight: bold;
+    padding: 0 14px;
+}
+QPushButton#CSVBack {
+    background: #FFFFFF; border: 2px solid #1565C0; color: #1565C0;
+}
+QPushButton#CSVBack:pressed { background: #E3EEFA; }
+QPushButton#CSVRefresh {
+    background: #F8FAFB; border: 1px solid #B9C4D2; color: #4A5568;
+}
+QPushButton#CSVRefresh:pressed { background: #E8EDF3; }
+QPushButton#CSVExport {
+    background: #1B8A4C; border: 2px solid #1B8A4C; color: #FFFFFF;
+}
+QPushButton#CSVExport:pressed { background: #126B39; border-color: #126B39; }
+QPushButton#CSVExport:disabled { background: #AFCDBB; border-color: #AFCDBB; }
+QWidget#CSVHeader {
+    background: #FFFFFF;
+    border-bottom: 1px solid #DDE3EA;
+}
+QPushButton#TopClose {
+    background: #FFFFFF;
+    border: 2px solid #C62828;
+    border-radius: 8px;
+    color: #C62828;
+    font-size: 20pt;
+    font-weight: bold;
+}
+QPushButton#TopClose:pressed { background: #FFEBEE; }
 """
 
 
@@ -209,6 +243,7 @@ _DEF = {
     "adc":       {"zero": 2048,  "mpc": 0.0684, "factor": 1.0, "calibrated": False},
     "incl":      {"offset": 0.0, "factor": 1.0, "calibrated": False},
     "gnss":      {"ref_ch": 0.0, "calibrated": False},
+    "permissible_limits": {"gauge_mm": 9.0, "crosslevel_mm": None, "twist_mm_per_m": 3.0},
 }
 def load_cfg():
     if CFG_PATH.exists():
@@ -241,6 +276,20 @@ def save_cfg(cfg):
         CFG_PATH.write_text(json.dumps(cfg, indent=2))
     except Exception as e:
         print(f"[CFG] {e}")
+
+
+def permissible_limits(cfg=None):
+    """Editable saved-data and live-display alarm limits."""
+    limits = (cfg or load_cfg()).get("permissible_limits", {})
+    return {"Gauge": limits.get("gauge_mm"), "Crosslevel": limits.get("crosslevel_mm"), "Twist": limits.get("twist_mm_per_m")}
+
+
+def exceeds_permissible(field, value, cfg=None):
+    limit = permissible_limits(cfg).get(field)
+    try:
+        return limit is not None and abs(float(value)) > float(limit)
+    except (TypeError, ValueError):
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -818,6 +867,17 @@ class Stepper(QWidget):
             " color:#5B6575; font-size:10pt; font-weight:700; }"
             "QPushButton:hover { background:#F8FAFB; border-color:#BAC8D8; }")
         clr.clicked.connect(self._pad_clear)
+        if self._lo < 0:
+            sign = QPushButton("+/-")
+            sign.setFixedHeight(44)
+            sign.setStyleSheet(
+                "QPushButton { background:#FFFFFF; border:1px solid #DDE3EA;"
+                " border-radius:10px; color:#5B6575; font-size:10pt;"
+                " font-weight:700; }"
+                "QPushButton:hover { background:#F8FAFB; border-color:#BAC8D8; }"
+            )
+            sign.clicked.connect(self._pad_toggle_sign)
+            action_l.addWidget(sign)
         done = QPushButton("DONE")
         done.setFixedHeight(44)
         done.setStyleSheet(
@@ -861,6 +921,13 @@ class Stepper(QWidget):
 
     def _pad_clear(self):
         self._buf = ""
+        self._pad_refresh()
+
+    def _pad_toggle_sign(self):
+        if self._buf.startswith("-"):
+            self._buf = self._buf[1:]
+        else:
+            self._buf = "-" + (self._buf or "0")
         self._pad_refresh()
 
     def _pad_refresh(self):
@@ -1281,8 +1348,22 @@ class CSVLogger:
         self._f.flush()
 
     def stop(self):
-        if self._f: self._f.close()
+        saved_path = self.path
+        if self._f:
+            self._f.close()
+        # The filename records the start time.  Set the completed file's
+        # modification time at STOP so the CSV/USB page can show the exact
+        # recording end time without changing the survey CSV data format.
+        if saved_path and os.path.exists(saved_path):
+            try:
+                stopped_at = time.time()
+                os.utime(saved_path, (stopped_at, stopped_at))
+            except OSError:
+                # Closing the CSV remains successful even on a filesystem
+                # that does not permit timestamp updates.
+                pass
         self._f = self._w = None
+        return saved_path
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1395,11 +1476,16 @@ class GraphCanvas(QWidget):
 #  TOP BAR
 # ═════════════════════════════════════════════════════════════════════════════
 class TopBar(QWidget):
+    sig_close_requested = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(70)
-        from PyQt5.QtGui import QPixmap
-        self._logo = QPixmap("C:/Users/Pilabs/Downloads/Patil_logo.png")
+        self._close_btn = QPushButton("X", self)
+        self._close_btn.setObjectName("TopClose")
+        self._close_btn.setFixedSize(62, 46)
+        self._close_btn.setToolTip("Close application")
+        self._close_btn.clicked.connect(self.sig_close_requested)
 
         self._bar_count   = 4
         self._bar_color   = QColor("#4CAF50")
@@ -1422,16 +1508,6 @@ class TopBar(QWidget):
         W, H = self.width(), self.height()
 
         p.fillRect(0, 0, W, H, QColor("#1C2333"))
-        if not self._logo.isNull():
-            logo_size = 60
-            x_logo = 10
-            y_logo = (H - logo_size) // 2
-            path = QPainterPath()
-            path.addEllipse(x_logo, y_logo, logo_size, logo_size)
-            p.setClipPath(path)
-            p.drawPixmap(x_logo, y_logo, logo_size, logo_size, self._logo)
-            p.setClipping(False)
-
         p.fillRect(0, H - 2, W, 2, QColor("#2A3A50"))
 
         cy = H // 2
@@ -1443,7 +1519,9 @@ class TopBar(QWidget):
 
         bw, bg_gap = 6, 4
         bar_hs = (7, 12, 17, 22)
-        x = 220
+        # The close control occupies the far-left edge.  Keep the connection
+        # and sensor state grouped immediately to its right.
+        x = 92
         for i, bh in enumerate(bar_hs):
             by = cy + 9 - bh
             col = self._bar_color if i < self._bar_count else QColor("#3A4555")
@@ -1470,7 +1548,7 @@ class TopBar(QWidget):
 
         p.setFont(f_mono_sm)
         p.setPen(QColor("#A8C8A8") if self._sensor_ok else QColor("#FFAA44"))
-        p.drawText(x, 0, 180, H, Qt.AlignVCenter | Qt.AlignLeft, self._sensor_txt)
+        p.drawText(x, 0, 120, H, Qt.AlignVCenter | Qt.AlignLeft, self._sensor_txt)
 
         right_pad = 78
         clock_w = 138
@@ -1501,6 +1579,10 @@ class TopBar(QWidget):
                    Qt.AlignCenter, self._title_txt)
 
         p.end()
+
+    def resizeEvent(self, event):
+        self._close_btn.move(14, (self.height() - self._close_btn.height()) // 2)
+        super().resizeEvent(event)
 
     def _tick(self):
         self._time_txt = datetime.now().strftime("%H:%M:%S")
@@ -2997,8 +3079,89 @@ class DataEntryPage(QWidget):
 # ═════════════════════════════════════════════════════════════════════════════
 #  CSV VIEWER PAGE
 # ═════════════════════════════════════════════════════════════════════════════
+class USBExportRangeDialog(QDialog):
+    """Operator-facing local-survey picker for a date-bounded USB export."""
+    def __init__(self, csv_dir, parent=None):
+        super().__init__(parent)
+        self._csv_dir = Path(csv_dir)
+        self.setWindowTitle("Select surveys for USB export")
+        self.setMinimumSize(860, 520)
+        self.setStyleSheet("QDialog{background:#FFFFFF;} QTableWidget{font-size:9pt;}")
+        root = QVBoxLayout(self)
+        title = QLabel("USB EXPORT — SELECT SURVEYS")
+        title.setStyleSheet(f"color:{CYAN}; font-size:15pt; font-weight:bold;")
+        root.addWidget(title)
+        root.addWidget(QLabel("Choose the date range, select the required CSV files, then export only that selection."))
+        filters = QHBoxLayout()
+        filters.addWidget(QLabel("From:"))
+        self._from = QDateEdit(QDate.currentDate().addDays(-7))
+        self._from.setCalendarPopup(True)
+        filters.addWidget(self._from)
+        filters.addWidget(QLabel("To:"))
+        self._to = QDateEdit(QDate.currentDate())
+        self._to.setCalendarPopup(True)
+        filters.addWidget(self._to)
+        apply_btn = _btn("APPLY RANGE", "BC", 38, 145)
+        apply_btn.clicked.connect(self._populate)
+        all_btn = _btn("SELECT ALL", "BX", 38, 130)
+        all_btn.clicked.connect(lambda: self._table.selectAll())
+        filters.addWidget(apply_btn)
+        filters.addWidget(all_btn)
+        filters.addStretch()
+        root.addLayout(filters)
+        self._table = QTableWidget(0, 3)
+        self._table.setHorizontalHeaderLabels(["Saved date & time", "CSV file", "Size"])
+        self._table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self._table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._table.horizontalHeader().setStretchLastSection(True)
+        root.addWidget(self._table, 1)
+        self._status = QLabel("")
+        self._status.setStyleSheet("color:#4A5568; font-size:9pt;")
+        root.addWidget(self._status)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        cancel = _btn("CANCEL", "BR", 42, 120)
+        cancel.clicked.connect(self.reject)
+        export = _btn("EXPORT SELECTED", "BG", 42, 190)
+        export.clicked.connect(self.accept)
+        actions.addWidget(cancel)
+        actions.addWidget(export)
+        root.addLayout(actions)
+        self._populate()
+
+    def _populate(self):
+        start, end = self._from.date(), self._to.date()
+        if start > end:
+            self._status.setText("The From date must not be later than the To date.")
+            self._table.setRowCount(0)
+            return
+        files = []
+        for path in self._csv_dir.glob("*.csv"):
+            modified = datetime.fromtimestamp(path.stat().st_mtime)
+            date = QDate(modified.year, modified.month, modified.day)
+            if start <= date <= end:
+                files.append((modified, path))
+        files.sort(reverse=True)
+        self._table.setRowCount(len(files))
+        for row, (modified, path) in enumerate(files):
+            date_item = QTableWidgetItem(modified.strftime("%d-%m-%Y %H:%M:%S"))
+            name_item = QTableWidgetItem(path.name)
+            name_item.setData(Qt.UserRole, str(path))
+            size_item = QTableWidgetItem(f"{path.stat().st_size / 1024:.1f} KB")
+            self._table.setItem(row, 0, date_item)
+            self._table.setItem(row, 1, name_item)
+            self._table.setItem(row, 2, size_item)
+        self._status.setText(f"{len(files)} file(s) in selected date range. Select one or more rows.")
+
+    def selected_files(self):
+        return [self._table.item(index.row(), 1).data(Qt.UserRole)
+                for index in self._table.selectionModel().selectedRows()]
+
+
 class CSVViewerPage(QWidget):
     sig_back = pyqtSignal()
+    sig_before_export = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3009,33 +3172,33 @@ class CSVViewerPage(QWidget):
         root.setSpacing(0)
 
         hdr_w = QWidget()
-        hdr_w.setFixedHeight(50)
-        hdr_w.setStyleSheet("background:#070707; border-bottom:1px solid #1a1a1a;")
+        hdr_w.setObjectName("CSVHeader")
+        hdr_w.setFixedHeight(80)
         hdr = QHBoxLayout(hdr_w)
-        hdr.setContentsMargins(10, 0, 10, 0)
-        hdr.setSpacing(8)
+        hdr.setContentsMargins(14, 12, 14, 12)
+        hdr.setSpacing(12)
 
-        back = _btn("← DASHBOARD", "BC", 40, 170)
+        back = _btn("<  BACK TO DASHBOARD", "CSVBack", 52, 220)
         back.clicked.connect(self.sig_back)
 
-        title = QLabel("📋   CSV FILE VIEWER")
-        title.setStyleSheet(
-            f"color:{MAGI}; font-size:13pt; font-weight:bold; letter-spacing:3px;")
+        export_btn = _btn("COPY SELECTED CSVs TO USB", "CSVExport", 52, 280)
+        export_btn.clicked.connect(self._export_selected_to_usb)
+        top_refresh = _btn("REFRESH FILE LIST", "CSVRefresh", 52, 180)
+        top_refresh.clicked.connect(self._refresh_list)
 
-        self._file_lbl = QLabel("No file loaded")
-        self._file_lbl.setStyleSheet("color:#444; font-size:8pt; font-family:'Courier New';")
-        self._file_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-        browse_btn = _btn("📂  BROWSE", "BM", 40, 130)
-        browse_btn.clicked.connect(self._browse)
+        # Matching side areas keep the primary USB action exactly centered.
+        right_actions = QWidget()
+        right_actions.setFixedWidth(220)
+        right_layout = QHBoxLayout(right_actions)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addStretch(1)
+        right_layout.addWidget(top_refresh)
 
         hdr.addWidget(back)
-        hdr.addSpacing(10)
-        hdr.addWidget(title)
-        hdr.addStretch()
-        hdr.addWidget(self._file_lbl, 1)
-        hdr.addSpacing(8)
-        hdr.addWidget(browse_btn)
+        hdr.addStretch(1)
+        hdr.addWidget(export_btn)
+        hdr.addStretch(1)
+        hdr.addWidget(right_actions)
         root.addWidget(hdr_w)
 
         body = QHBoxLayout()
@@ -3067,6 +3230,9 @@ class CSVViewerPage(QWidget):
         refresh_btn.clicked.connect(self._refresh_list)
         ll.addWidget(refresh_btn)
 
+        # The old preview/sidebar is hidden. Reading a large CSV just to open
+        # this page made the touchscreen interface slow.
+        left.setVisible(False)
         body.addWidget(left)
 
         right = QFrame(); right.setObjectName("Panel")
@@ -3080,26 +3246,34 @@ class CSVViewerPage(QWidget):
 
         self._table = QTableWidget()
         self._table.setStyleSheet(
-            f"QTableWidget {{ background:#060606; color:#ccc;"
+            f"QTableWidget {{ background:#FFFFFF; color:#1A2332;"
             f" font-size:8pt; font-family:'Courier New';"
-            f" gridline-color:#1a1a1a; border:none; }}"
-            f"QHeaderView::section {{ background:#0c0c0c; color:{MAGI};"
-            f" font-size:8pt; font-weight:bold; border:1px solid #1a1a1a;"
+            f" gridline-color:#DDE3EA; border:none; }}"
+            f"QHeaderView::section {{ background:#EAF2FF; color:{CYAN};"
+            f" font-size:8pt; font-weight:bold; border:1px solid #C8DDF5;"
             f" padding:4px; }}"
-            f"QTableWidget::item:selected {{ background:{MAGI}33; color:#fff; }}"
-            f"QScrollBar:vertical {{ background:#0a0a0a; width:8px; }}"
-            f"QScrollBar::handle:vertical {{ background:#2a2a2a; border-radius:4px; }}"
-            f"QScrollBar:horizontal {{ background:#0a0a0a; height:8px; }}"
-            f"QScrollBar::handle:horizontal {{ background:#2a2a2a; border-radius:4px; }}"
+            f"QTableWidget::item:selected {{ background:#DCEBFF; color:#1A2332; }}"
+            f"QScrollBar:vertical {{ background:#F0F4FA; width:14px; }}"
+            f"QScrollBar::handle:vertical {{ background:#AFC5E5; border-radius:6px; }}"
+            f"QScrollBar:horizontal {{ background:#F0F4FA; height:14px; }}"
+            f"QScrollBar::handle:horizontal {{ background:#AFC5E5; border-radius:6px; }}"
         )
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.verticalHeader().setDefaultSectionSize(28)
+        self._table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self._table.verticalHeader().setDefaultSectionSize(48)
         self._table.verticalHeader().setStyleSheet(
-            "QHeaderView::section { background:#0c0c0c; color:#333;"
-            " font-size:7pt; border:1px solid #1a1a1a; }")
+            "QHeaderView::section { background:#F4F7FB; color:#607080;"
+            " font-size:7pt; border:1px solid #DDE3EA; }")
+        # Let an operator swipe anywhere in the list, as on a phone.  The
+        # scrollbar is intentionally hidden; a short tap still operates a
+        # selection checkbox while a drag scrolls the list.
+        self._table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        QScroller.grabGesture(self._table.viewport(), QScroller.TouchGesture)
+        QScroller.grabGesture(self._table.viewport(), QScroller.LeftMouseButtonGesture)
         rl.addWidget(self._table, 1)
 
         body.addWidget(right, 1)
@@ -3110,14 +3284,9 @@ class CSVViewerPage(QWidget):
 
     def set_csv_dir(self, path):
         self._csv_dir = path
-        self._refresh_list()
 
     def load_latest(self):
         self._refresh_list()
-        files = sorted(Path(self._csv_dir).glob("*.csv"),
-                       key=lambda p: p.stat().st_mtime, reverse=True)
-        if files:
-            self._load_file(str(files[0]))
 
     def _refresh_list(self):
         while self._file_list_layout.count() > 1:
@@ -3127,6 +3296,46 @@ class CSVViewerPage(QWidget):
 
         files = sorted(Path(self._csv_dir).glob("*.csv"),
                        key=lambda p: p.stat().st_mtime, reverse=True)
+        # List file details only.  CSV contents are deliberately not read here,
+        # so this page remains fast even when files contain many samples.
+        self._table.clear()
+        self._table.setColumnCount(3)
+        self._table.setRowCount(len(files))
+        self._table.setHorizontalHeaderLabels(["SELECT", "CSV FILE (START TIME)", "END TIME"])
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self._table.setColumnWidth(0, 90)
+        for row, f in enumerate(files):
+            ended_at = datetime.fromtimestamp(f.stat().st_mtime).strftime("%d-%m-%Y  %H:%M:%S")
+            details = (f.name, ended_at)
+            # A large explicit check button makes each selection obvious on
+            # the touchscreen: blue square with a white tick when selected.
+            check_cell = QWidget()
+            check_layout = QHBoxLayout(check_cell)
+            check_layout.setContentsMargins(0, 0, 0, 0)
+            check_layout.addStretch()
+            checkbox = QPushButton()
+            checkbox.setCheckable(True)
+            checkbox.setFixedSize(30, 30)
+            checkbox.setStyleSheet(
+                "QPushButton { background:#FFFFFF; border:2px solid #2F80ED; border-radius:4px; color:#FFFFFF;"
+                " font-size:20pt; font-weight:bold; padding:0px; }"
+                "QPushButton:checked { background:#2F80ED; border-color:#2F80ED; color:#FFFFFF; }"
+                "QPushButton:pressed { background:#1565C0; }")
+            checkbox.toggled.connect(
+                lambda checked, button=checkbox: button.setText("✓" if checked else ""))
+            check_layout.addWidget(checkbox)
+            check_layout.addStretch()
+            check_cell._csv_checkbox = checkbox
+            self._table.setCellWidget(row, 0, check_cell)
+            for column, value in enumerate(details, start=1):
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignVCenter | (Qt.AlignLeft if column == 1 else Qt.AlignCenter))
+                if column == 1:
+                    item.setData(Qt.UserRole, str(f))
+                self._table.setItem(row, column, item)
+        self._row_lbl.setText("Select one or more files, then press COPY SELECTED CSVs TO USB.")
+
+        # This hidden legacy list is retained only to keep the layout compatible.
         for f in files:
             btn = QPushButton(f.name)
             btn.setObjectName("EF")
@@ -3151,6 +3360,91 @@ class CSVViewerPage(QWidget):
         if path:
             self._load_file(path)
 
+    def _browse_usb(self):
+        """Open a CSV stored on an automatically mounted USB drive."""
+        usb_root = Path("/media/rail-usb")
+        if not usb_root.is_dir() or not any(usb_root.iterdir()):
+            QMessageBox.information(
+                self, "USB files",
+                "No mounted USB drive found. Insert a FAT32/exFAT pen drive and wait a few seconds.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open CSV from USB", str(usb_root), "CSV Files (*.csv)")
+        if path:
+            self._load_file(path)
+
+    def _export_selected_to_usb(self):
+        """Copy only rows selected in the saved-CSV list to the USB drive."""
+        selected = []
+        for row in range(self._table.rowCount()):
+            check_cell = self._table.cellWidget(row, 0)
+            checkbox = getattr(check_cell, "_csv_checkbox", None)
+            file_item = self._table.item(row, 1)
+            if checkbox and checkbox.isChecked() and file_item:
+                selected.append(file_item.data(Qt.UserRole))
+        if not selected:
+            QMessageBox.information(self, "USB export", "Tick at least one CSV file checkbox first.")
+            return
+
+        self.sig_before_export.emit()
+        helper = Path(__file__).resolve().parent / "tools" / "export_surveys_to_usb.py"
+        command = [sys.executable, str(helper)]
+        for path in selected:
+            command.extend(["--file", path])
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            QMessageBox.warning(self, "USB export", "Export timed out. Do not remove the USB drive; try again.")
+            return
+        detail = (result.stdout or result.stderr or "USB export failed.").strip()
+        if result.returncode == 0:
+            QMessageBox.information(self, "USB export complete", detail)
+        else:
+            QMessageBox.warning(self, "USB export", detail)
+
+    def _export_to_usb(self):
+        """Copy (never move) all local CSVs to an inserted, mounted USB drive."""
+        self.sig_before_export.emit()
+        helper = Path(__file__).resolve().parent / "tools" / "export_surveys_to_usb.py"
+        try:
+            result = subprocess.run(
+                [sys.executable, str(helper), "--source", self._csv_dir],
+                capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            QMessageBox.warning(
+                self, "USB export",
+                "Export timed out. Do not remove the USB drive; try again.")
+            return
+        detail = (result.stdout or result.stderr or "USB export failed.").strip()
+        if result.returncode == 0:
+            QMessageBox.information(self, "USB export complete", detail)
+        else:
+            QMessageBox.warning(self, "USB export", detail)
+
+    def _export_range_to_usb(self):
+        dialog = USBExportRangeDialog(self._csv_dir, self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        selected = dialog.selected_files()
+        if not selected:
+            QMessageBox.information(self, "USB export", "Select at least one CSV file to export.")
+            return
+        self.sig_before_export.emit()
+        helper = Path(__file__).resolve().parent / "tools" / "export_surveys_to_usb.py"
+        command = [sys.executable, str(helper)]
+        for path in selected:
+            command.extend(["--file", path])
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            QMessageBox.warning(self, "USB export", "Export timed out. Do not remove the USB drive; try again.")
+            return
+        detail = (result.stdout or result.stderr or "USB export failed.").strip()
+        if result.returncode == 0:
+            QMessageBox.information(self, "USB export complete", detail)
+        else:
+            QMessageBox.warning(self, "USB export", detail)
+
     def _load_file(self, path):
         try:
             with open(path, newline="") as f:
@@ -3167,10 +3461,12 @@ class CSVViewerPage(QWidget):
                 for c, h in enumerate(headers):
                     item = QTableWidgetItem(str(row.get(h, "")))
                     item.setTextAlignment(Qt.AlignCenter)
+                    if exceeds_permissible(h, row.get(h, "")):
+                        item.setForeground(QBrush(QColor(RED)))
+                        item.setBackground(QBrush(QColor(RED_LT)))
                     self._table.setItem(r, c, item)
 
             name = Path(path).name
-            self._file_lbl.setText(name)
             self._row_lbl.setText(
                 f"{len(rows)} rows  ·  {len(headers)} columns  ·  {name}")
         except Exception as e:
@@ -3193,6 +3489,7 @@ class DashboardPage(QWidget):
     sig_toggle = pyqtSignal(bool)
     sig_pause  = pyqtSignal(bool)
     sig_entry  = pyqtSignal()
+    sig_csv    = pyqtSignal()
     sig_cal    = pyqtSignal()
 
     def __init__(self):
@@ -3228,17 +3525,17 @@ class DashboardPage(QWidget):
         bot_w.setStyleSheet("background:#ECEFF4;")
         bot = QHBoxLayout(bot_w)
         bot.setContentsMargins(8, 8, 8, 8)
-        bot.setSpacing(10)
+        bot.setSpacing(6)
 
         self._toggle = QPushButton("▶  START")
         self._toggle.setFixedHeight(58)
-        self._toggle.setMinimumWidth(130)
+        self._toggle.setMinimumWidth(112)
         self._toggle.setStyleSheet(self._ss_start())
         self._toggle.clicked.connect(self._do_toggle)
 
         self._pause_btn = QPushButton("⏸  PAUSE")
         self._pause_btn.setFixedHeight(58)
-        self._pause_btn.setMinimumWidth(130)
+        self._pause_btn.setMinimumWidth(108)
         self._pause_btn.setStyleSheet(self._ss_pause())
         self._pause_btn.setEnabled(False)
         self._pause_btn.clicked.connect(self._do_pause)
@@ -3249,18 +3546,24 @@ class DashboardPage(QWidget):
 
         self._entry_btn = QPushButton("DATA ENTRY")
         self._entry_btn.setFixedHeight(58)
-        self._entry_btn.setMinimumWidth(150)
+        self._entry_btn.setMinimumWidth(130)
         self._entry_btn.setStyleSheet(self._ss_action(CYAN))
         self._entry_btn.clicked.connect(self.sig_entry)
 
+        self._csv_btn = QPushButton("CSV / USB")
+        self._csv_btn.setFixedHeight(58)
+        self._csv_btn.setMinimumWidth(125)
+        self._csv_btn.setStyleSheet(self._ss_action(MAGI))
+        self._csv_btn.clicked.connect(self.sig_csv)
+
         self._cal_btn = QPushButton("CALIBRATE")
         self._cal_btn.setFixedHeight(58)
-        self._cal_btn.setMinimumWidth(130)
+        self._cal_btn.setMinimumWidth(105)
         self._cal_btn.setStyleSheet(self._ss_action(AMBER))
         self._cal_btn.clicked.connect(self.sig_cal)
 
         self._station_no = QLabel("STN NO: --")
-        self._station_no.setFixedSize(124, 40)
+        self._station_no.setFixedSize(100, 40)
         self._station_no.setAlignment(Qt.AlignCenter)
         self._station_no.setStyleSheet(
             f"background:{CYAN_LT}; border:1px solid {CYAN}; border-radius:6px;"
@@ -3277,6 +3580,7 @@ class DashboardPage(QWidget):
         bot.addWidget(self._pause_btn)
         bot.addWidget(vsep)
         bot.addWidget(self._entry_btn)
+        bot.addWidget(self._csv_btn)
         bot.addWidget(self._cal_btn)
         bot.addSpacing(8)
         bot.addWidget(self._stat)
@@ -3286,7 +3590,7 @@ class DashboardPage(QWidget):
         lay.addWidget(bot_w)
 
     def _ss_action(self, color):
-        bg = CYAN_LT if color == CYAN else AMBER_LT
+        bg = CYAN_LT if color == CYAN else (MAGI_LT if color == MAGI else AMBER_LT)
         return (
             f"QPushButton{{"
             f" background:{bg}; border:2px solid {color};"
@@ -3434,12 +3738,14 @@ class TrackApp(QWidget):
         root.setSpacing(0)
 
         self.topbar = TopBar(self)
+        self.topbar.sig_close_requested.connect(self.close)
         self.stack = QStackedWidget()
 
         self.dash = DashboardPage()
         self.dash.sig_toggle.connect(self._on_toggle)
         self.dash.sig_pause.connect(self._on_pause)
         self.dash.sig_entry.connect(lambda: self._goto(2))
+        self.dash.sig_csv.connect(self._show_csv_viewer)
         self.dash.sig_cal.connect(self._request_calibration_access)
         self.stack.addWidget(self.dash)       # 0
 
@@ -3457,6 +3763,7 @@ class TrackApp(QWidget):
 
         self.csv_viewer = CSVViewerPage()
         self.csv_viewer.sig_back.connect(lambda: self._goto(0))
+        self.csv_viewer.sig_before_export.connect(self._flush_csv_for_export)
         self.csv_viewer.set_csv_dir(self.cfg["csv_dir"])
         self.stack.addWidget(self.csv_viewer) # 4
 
@@ -3565,6 +3872,16 @@ class TrackApp(QWidget):
         self.csv_viewer.set_csv_dir(self.cfg["csv_dir"])
         self.csv_viewer.load_latest()
         self._goto(4)
+
+    def _flush_csv_for_export(self):
+        """Include the most recent in-progress survey samples in USB export."""
+        file_handle = getattr(self.logger, "_f", None)
+        if file_handle:
+            file_handle.flush()
+            try:
+                os.fsync(file_handle.fileno())
+            except OSError:
+                pass
 
     def _pick_csv(self):
         d = QFileDialog.getExistingDirectory(

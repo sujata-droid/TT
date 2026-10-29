@@ -22,6 +22,8 @@
 
 set -e  # Exit on any error
 
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 RED='\033[0;31m'; GRN='\033[0;32m'; YLW='\033[1;33m'; NC='\033[0m'
 ok()   { echo -e "${GRN}[OK]${NC} $*"; }
 warn() { echo -e "${YLW}[WARN]${NC} $*"; }
@@ -53,6 +55,7 @@ apt-get install -y -qq \
     linux-headers-$(uname -r) \
     spi-tools \
     2>/dev/null || warn "Some packages may not have installed (non-fatal)"
+
 ok "Packages installed"
 
 # Locate config-pin
@@ -119,6 +122,13 @@ chown debian:debian "$SURVEY_DIR" 2>/dev/null || chown 1000:1000 "$SURVEY_DIR" |
 chmod 755 "$SURVEY_DIR"
 ok "Survey dir: $SURVEY_DIR"
 
+# USB export mount service.  The GUI export helper only writes to a mounted
+# removable drive; this udev/systemd pair mounts a newly inserted FAT32/exFAT
+# USB partition at /media/rail-usb/<device>, owned by the debian user.
+echo "Installing automatic USB mount service..."
+bash "$PROJECT_DIR/tools/install_usb_export.sh"
+ok "Automatic USB mount service installed (FAT32/exFAT only)"
+
 # â”€â”€ 7. Verify â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo ""
 echo "[7/7] System verification..."
@@ -128,6 +138,7 @@ echo "  SPI device:    $(ls -l /dev/spidev0.0 2>/dev/null || echo 'NOT FOUND')"
 echo "  PRU firmware:  NOT REQUIRED for basic eQEP2 encoder test"
 echo "  sensor_service:$(ls -lh sensor_board/sensor_service 2>/dev/null || echo 'NOT BUILT')"
 echo "  Survey dir:    $(ls -ld $SURVEY_DIR 2>/dev/null || echo 'NOT FOUND')"
+echo "  USB mount dir: $(ls -ld /media/rail-usb 2>/dev/null || echo 'NOT FOUND')"
 echo "  GPSD:          $(command -v gpsd 2>/dev/null || echo 'NOT INSTALLED')"
 
 # Cloud URL check

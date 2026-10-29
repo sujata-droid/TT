@@ -59,6 +59,11 @@
 #define LASER_RAW_AT_PLUS80_DEFAULT 2957.5
 #define LASER_RAW_AT_ZERO_DEFAULT 1365.0
 #define LASER_RAW_AT_MINUS80_DEFAULT 0.0
+#define LASER_CAL_RAW_AT_PLUS80 (1.35 / 1.8 * 4095.0)
+#define LASER_CAL_RAW_AT_ZERO (LASER_CAL_RAW_AT_PLUS80 / 2.0)
+#define LASER_ENDPOINT_TOLERANCE_PCT 1.0
+#define LASER_CAL_FACTOR_MIN (1.0 / 1.15)
+#define LASER_CAL_FACTOR_MAX (1.0 / 0.85)
 /* The 120..280 mm Track Gauge window uses fixed calibration endpoints. */
 #define LASER_AUTO_ZERO_DEFAULT 0
 #define TWIST_SAMPLE_STEP_DEFAULT TWIST_SAMPLE_STEP_M
@@ -96,6 +101,15 @@ typedef struct {
     double laser_raw_at_plus80;
     double laser_raw_at_zero;
     double laser_raw_at_minus80;
+    double laser_raw_default_plus80;
+    double laser_raw_default_zero;
+    double laser_raw_default_minus80;
+    double laser_cal_factor;
+    char laser_cal_path[PATH_MAX];
+    time_t laser_cal_mtime;
+    off_t laser_cal_size;
+    ino_t laser_cal_inode;
+    int laser_cal_active;
     double last_laser_mm;
     int healthy;
 } GaugeADC;
@@ -126,6 +140,11 @@ static GaugeADC g_gauge = {
     .laser_raw_at_plus80 = LASER_RAW_AT_PLUS80_DEFAULT,
     .laser_raw_at_zero = LASER_RAW_AT_ZERO_DEFAULT,
     .laser_raw_at_minus80 = LASER_RAW_AT_MINUS80_DEFAULT,
+    .laser_cal_factor = 1.0,
+    .laser_cal_mtime = (time_t)-1,
+    .laser_cal_size = (off_t)-1,
+    .laser_cal_inode = 0,
+    .laser_cal_active = 0,
     .last_laser_mm = LASER_ZERO_MM_DEFAULT,
     .healthy = 0,
 };
@@ -225,6 +244,143 @@ static double env_double_any(const char *name, double fallback) {
 
 static int gauge_read_raw(const GaugeADC *gauge, int *raw_out);
 
+static int json_number_field(const char *json, const char *name, double *value_out) {
+    char key[64];
+    const char *field;
+    const char *colon;
+    char *end = NULL;
+    char *tail;
+    double value;
+
+    if (!json || !name || !value_out) return 0;
+    if (snprintf(key, sizeof(key), "\"%s\"", name) >= (int)sizeof(key)) return 0;
+    field = strstr(json, key);
+    if (!field) return 0;
+    colon = strchr(field + strlen(key), ':');
+    if (!colon) return -1;
+    value = strtod(colon + 1, &end);
+    if (end == colon + 1 || !isfinite(value)) return -1;
+    tail = end;
+    while (*tail == ' ' || *tail == '\t' || *tail == '\r' || *tail == '\n') tail++;
+    if (*tail != ',' && *tail != '}' && *tail != ']') return -1;
+    *value_out = value;
+    return 1;
+}
+
+static void gauge_reload_laser_calibration(GaugeADC *gauge) {
+    const char *configured_path;
+    struct stat st;
+    FILE *fp;
+    char data[1024];
+    char *factor_key;
+    char *colon;
+    char *end = NULL;
+    char *tail;
+    double factor;
+    double raw_plus80;
+    double raw_zero;
+    double raw_minus80;
+    int plus_status;
+    int zero_status;
+    int minus_status;
+    size_t bytes_read;
+
+    if (!gauge) return;
+    configured_path = getenv("RAIL_LASER_CAL_FILE");
+    if (configured_path && *configured_path &&
+        strncmp(gauge->laser_cal_path, configured_path, sizeof(gauge->laser_cal_path)) != 0) {
+        snprintf(gauge->laser_cal_path, sizeof(gauge->laser_cal_path), "%s", configured_path);
+        gauge->laser_cal_mtime = (time_t)-1;
+        gauge->laser_cal_size = (off_t)-1;
+        gauge->laser_cal_inode = 0;
+    }
+    if (stat(gauge->laser_cal_path, &st) != 0) {
+        if (errno == ENOENT && gauge->laser_cal_active) {
+            gauge->laser_cal_factor = 1.0;
+            gauge->laser_cal_active = 0;
+            gauge->laser_raw_at_plus80 = gauge->laser_raw_default_plus80;
+            gauge->laser_raw_at_zero = gauge->laser_raw_default_zero;
+            gauge->laser_raw_at_minus80 = gauge->laser_raw_default_minus80;
+            gauge->laser_cal_mtime = (time_t)-1;
+            gauge->laser_cal_size = (off_t)-1;
+            gauge->laser_cal_inode = 0;
+            printf("[GAUGE] laser calibration file removed; restored launcher references\n");
+        }
+        return;
+    }
+    if (gauge->laser_cal_mtime == st.st_mtime &&
+        gauge->laser_cal_size == st.st_size &&
+        gauge->laser_cal_inode == st.st_ino) {
+        return;
+    }
+    gauge->laser_cal_mtime = st.st_mtime;
+    gauge->laser_cal_size = st.st_size;
+    gauge->laser_cal_inode = st.st_ino;
+
+    fp = fopen(gauge->laser_cal_path, "r");
+    if (!fp) {
+        fprintf(stderr, "[GAUGE] cannot open laser calibration file %s: %s\n",
+                gauge->laser_cal_path, strerror(errno));
+        return;
+    }
+    bytes_read = fread(data, 1, sizeof(data) - 1, fp);
+    if (ferror(fp)) {
+        fprintf(stderr, "[GAUGE] cannot read laser calibration file %s\n",
+                gauge->laser_cal_path);
+        fclose(fp);
+        return;
+    }
+    fclose(fp);
+    data[bytes_read] = '\0';
+    plus_status = json_number_field(data, "raw_at_plus80", &raw_plus80);
+    zero_status = json_number_field(data, "raw_at_zero", &raw_zero);
+    minus_status = json_number_field(data, "raw_at_minus80", &raw_minus80);
+    if (plus_status != 0 || zero_status != 0 || minus_status != 0) {
+        if (plus_status != 1 || zero_status != 1 || minus_status != 1 ||
+            raw_plus80 < 0.0 || raw_plus80 > gauge->adc_max_raw ||
+            raw_zero < 0.0 || raw_zero > gauge->adc_max_raw ||
+            raw_minus80 < 0.0 || raw_minus80 > gauge->adc_max_raw ||
+            !(raw_plus80 > raw_zero && raw_zero > raw_minus80)) {
+            fprintf(stderr, "[GAUGE] invalid three-point laser references in %s\n",
+                    gauge->laser_cal_path);
+            return;
+        }
+        gauge->laser_cal_factor = 1.0;
+        gauge->laser_cal_active = 1;
+        gauge->laser_raw_at_plus80 = raw_plus80;
+        gauge->laser_raw_at_zero = raw_zero;
+        gauge->laser_raw_at_minus80 = raw_minus80;
+        printf("[GAUGE] loaded three-point laser references from %s; "
+               "+80=%.2f, 0=%.2f, -80=%.2f\n",
+               gauge->laser_cal_path, raw_plus80, raw_zero, raw_minus80);
+        return;
+    }
+    factor_key = strstr(data, "\"cal_factor\"");
+    if (!factor_key) factor_key = strstr(data, "\"factor\"");
+    colon = factor_key ? strchr(factor_key, ':') : NULL;
+    factor = colon ? strtod(colon + 1, &end) : 0.0;
+    tail = end;
+    while (tail && *tail && (*tail == ' ' || *tail == '\t' || *tail == '\r' || *tail == '\n'))
+        tail++;
+    if (!colon || end == colon + 1 || !tail || (*tail != ',' && *tail != '}') ||
+        !isfinite(factor) ||
+        factor < LASER_CAL_FACTOR_MIN || factor > LASER_CAL_FACTOR_MAX) {
+        fprintf(stderr, "[GAUGE] invalid laser calibration factor in %s\n",
+                gauge->laser_cal_path);
+        return;
+    }
+
+    gauge->laser_cal_factor = factor;
+    gauge->laser_cal_active = 1;
+    gauge->laser_raw_at_plus80 = LASER_CAL_RAW_AT_PLUS80;
+    gauge->laser_raw_at_zero = LASER_CAL_RAW_AT_ZERO;
+    gauge->laser_raw_at_minus80 = 0.0;
+    printf("[GAUGE] loaded laser calibration factor=%.6f from %s; "
+           "references=%.2f (+80), %.2f (0), 0 (-80)\n",
+           factor, gauge->laser_cal_path, gauge->laser_raw_at_plus80,
+           gauge->laser_raw_at_zero);
+}
+
 static int env_int(const char *name, int fallback) {
     const char *raw = getenv(name);
     char *end = NULL;
@@ -242,6 +398,7 @@ static void gauge_init(void) {
     const char *raw_path = getenv("RAIL_ADC_PATH");
     const char *source = getenv("RAIL_GAUGE_SOURCE");
     const char *out_mode = getenv("RAIL_GAUGE_OUTPUT_MODE");
+    const char *cal_path = getenv("RAIL_LASER_CAL_FILE");
     if (raw_path && *raw_path) {
         snprintf(g_gauge.path, sizeof(g_gauge.path), "%s", raw_path);
     }
@@ -286,6 +443,11 @@ static void gauge_init(void) {
                                                 LASER_RAW_AT_ZERO_DEFAULT);
     g_gauge.laser_raw_at_minus80 = env_double_any("RAIL_LASER_RAW_AT_MINUS80",
                                                    LASER_RAW_AT_MINUS80_DEFAULT);
+    g_gauge.laser_raw_default_plus80 = g_gauge.laser_raw_at_plus80;
+    g_gauge.laser_raw_default_zero = g_gauge.laser_raw_at_zero;
+    g_gauge.laser_raw_default_minus80 = g_gauge.laser_raw_at_minus80;
+    snprintf(g_gauge.laser_cal_path, sizeof(g_gauge.laser_cal_path), "%s",
+             (cal_path && *cal_path) ? cal_path : "laser_cal.json");
     if (g_gauge.laser_display_min_mm > g_gauge.laser_display_max_mm) {
         double tmp = g_gauge.laser_display_min_mm;
         g_gauge.laser_display_min_mm = g_gauge.laser_display_max_mm;
@@ -353,13 +515,17 @@ static int gauge_read_mm(GaugeADC *gauge, float *gauge_mm_out) {
     double output_mm;
     double ratio;
     double laser_mm;
+    double sample_raw;
     if (!gauge || !gauge_mm_out) return -1;
     if (gauge_read_raw(gauge, &raw) != 0) {
         gauge->healthy = 0;
         return -1;
     }
     gauge->healthy = 1;
+    sample_raw = (double)raw;
     if (gauge->source_laser_adc) {
+        gauge_reload_laser_calibration(gauge);
+        sample_raw *= gauge->laser_cal_factor;
         if (gauge->laser_auto_zero && (gauge->laser_zero_raw < 15.0)) {
             if (raw >= 15) {
                 gauge->laser_zero_raw = (double)raw;
@@ -371,7 +537,7 @@ static int gauge_read_mm(GaugeADC *gauge, float *gauge_mm_out) {
             (!gauge->laser_output_distance_window && (raw < 15 || raw > 3060))) {
             output_mm = 0.0;
         } else {
-            ratio = (double)raw / gauge->adc_max_raw;
+            ratio = sample_raw / gauge->adc_max_raw;
             if (ratio < 0.0) ratio = 0.0;
             if (ratio > 1.0) ratio = 1.0;
             laser_mm = gauge->laser_min_mm + ratio * (gauge->laser_max_mm - gauge->laser_min_mm);
@@ -384,18 +550,28 @@ static int gauge_read_mm(GaugeADC *gauge, float *gauge_mm_out) {
                 double span_zero_to_minus = gauge->laser_raw_at_zero - gauge->laser_raw_at_minus80;
                 double display_center_mm =
                     (gauge->laser_display_min_mm + gauge->laser_display_max_mm) / 2.0;
+                double mapped_raw = sample_raw;
+                double endpoint_tolerance =
+                    gauge->laser_raw_at_plus80 * LASER_ENDPOINT_TOLERANCE_PCT / 100.0;
                 /* Three-point calibration: +80 -> 120, 0 -> 200, -80 -> 280. */
                 if (span_plus_to_zero <= 0.0 || span_zero_to_minus <= 0.0 ||
-                    raw < gauge->laser_raw_at_minus80 || raw > gauge->laser_raw_at_plus80) {
+                    sample_raw < gauge->laser_raw_at_minus80 - endpoint_tolerance ||
+                    sample_raw > gauge->laser_raw_at_plus80 + endpoint_tolerance) {
                     output_mm = 0.0;
-                } else if ((double)raw >= gauge->laser_raw_at_zero) {
-                    output_mm = display_center_mm +
-                        (gauge->laser_raw_at_zero - (double)raw) *
-                        (display_center_mm - gauge->laser_display_min_mm) / span_plus_to_zero;
                 } else {
-                    output_mm = display_center_mm +
-                        (gauge->laser_raw_at_zero - (double)raw) *
-                        (gauge->laser_display_max_mm - display_center_mm) / span_zero_to_minus;
+                    if (mapped_raw < gauge->laser_raw_at_minus80)
+                        mapped_raw = gauge->laser_raw_at_minus80;
+                    if (mapped_raw > gauge->laser_raw_at_plus80)
+                        mapped_raw = gauge->laser_raw_at_plus80;
+                    if (mapped_raw >= gauge->laser_raw_at_zero) {
+                        output_mm = display_center_mm +
+                            (gauge->laser_raw_at_zero - mapped_raw) *
+                            (display_center_mm - gauge->laser_display_min_mm) / span_plus_to_zero;
+                    } else {
+                        output_mm = display_center_mm +
+                            (gauge->laser_raw_at_zero - mapped_raw) *
+                            (gauge->laser_display_max_mm - display_center_mm) / span_zero_to_minus;
+                    }
                 }
             } else if (gauge->gauge_output_deviation || gauge->laser_output_gauge_scale) {
                 double reference_laser;

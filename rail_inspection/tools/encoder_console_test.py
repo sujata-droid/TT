@@ -37,6 +37,8 @@ def main():
     parser.add_argument("--wheel-diameter-mm", type=float, default=50.0)
     parser.add_argument("--ppr", type=int, default=400,
                         help="encoder cycles per channel per revolution (400 gives 1600 counts/rev with 4X decoding)")
+    parser.add_argument("--factor", type=float, default=1.0,
+                        help="distance calibration multiplier for the live monitor (default: 1.0)")
     parser.add_argument("--sample-hz", type=float, default=10.0)
     parser.add_argument("--max-delta", type=int, default=0,
                         help="ignore count jumps larger than this between displayed samples")
@@ -56,6 +58,8 @@ def main():
         raise SystemExit("--max-delta must be >= 0")
     if args.wheel_diameter_mm <= 0:
         raise SystemExit("--wheel-diameter-mm must be > 0")
+    if not math.isfinite(args.factor) or not 0.5 <= args.factor <= 1.5:
+        raise SystemExit("--factor must be between 0.5 and 1.5")
     if (args.calibrate_counts is None) != (args.true_distance_m is None):
         raise SystemExit("--calibrate-counts and --true-distance-m must be used together")
 
@@ -88,7 +92,7 @@ def main():
             start = time.time()
             print("PRU encoder console test")
             print(f"ppr_per_channel={args.ppr} decode=4X counts_per_rev={counts_per_rev:.0f} wheel_diameter_mm={args.wheel_diameter_mm:.2f}")
-            print(f"mm_per_count={mm_per_count:.6f}")
+            print(f"mm_per_count={mm_per_count:.6f} factor={args.factor:.4f}")
             print("Fields: elapsed_s count delta dir chainage_m pru_status sample_us")
             while True:
                 count, status, sample_us, _reserved = read_block(mem, offset)
@@ -113,7 +117,7 @@ def main():
                 else:
                     direction = "STOP"
 
-                chainage_m = encoder_distance_m(count, mm_per_count)
+                chainage_m = encoder_distance_m(count, mm_per_count, args.factor)
                 print(
                     f"{elapsed:8.3f}s  count={count:10d}  delta={delta:6d}  "
                     f"dir={direction:4s}  chainage_m={chainage_m:10.5f}  "

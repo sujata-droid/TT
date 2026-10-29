@@ -304,6 +304,30 @@ def configure_console(args):
     client.close()
 
 
+def install_usb_export(args):
+    """Upload and install only the USB export mount support."""
+    client = connect()
+    sftp = client.open_sftp()
+    local_root = Path(__file__).resolve().parents[1]
+    for relative in (
+        "railgui25.py",
+        "bbb_runtime/launch_railgui25_backend.py",
+        "tools/export_surveys_to_usb.py",
+        "tools/install_usb_export.sh",
+        "tools/rail_usb_mount.sh",
+        "tools/rail-usb-mount@.service",
+        "tools/99-rail-usb-mount.rules",
+    ):
+        local_path = local_root / relative
+        remote_path = f"{REMOTE_ROOT}/{relative}"
+        sftp_mkdirs(sftp, posixpath.dirname(remote_path))
+        sftp.put(str(local_path), remote_path)
+    sftp.close()
+    sudo_run(client, f"bash {shell_quote(REMOTE_ROOT + '/tools/install_usb_export.sh')}", timeout=180)
+    run(client, "findmnt -rn -o SOURCE,TARGET,FSTYPE | grep '/media/rail-usb' || true", timeout=30)
+    client.close()
+
+
 def remote_cmd(args):
     client = connect()
     code = sudo_run(client, args.command, timeout=args.timeout) if args.sudo else run(
@@ -331,6 +355,7 @@ def main():
     console.add_argument("--user", default=USER)
     console.add_argument("--mode", choices=["console", "app"], default="console")
     console.set_defaults(func=configure_console)
+    sub.add_parser("install-usb-export").set_defaults(func=install_usb_export)
     remote = sub.add_parser("remote")
     remote.add_argument("--sudo", action="store_true")
     remote.add_argument("--timeout", type=int, default=120)

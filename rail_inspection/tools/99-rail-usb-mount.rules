@@ -1,0 +1,2 @@
+# Start the mount service when a USB mass-storage partition appears.
+ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", KERNEL=="sd[a-z][0-9]*", ENV{ID_BUS}=="usb", TAG+="systemd", ENV{SYSTEMD_WANTS}+="rail-usb-mount@%k.service"

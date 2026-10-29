@@ -1,0 +1,10 @@
+[Unit]
+Description=Mount Rail Inspection USB drive %I
+BindsTo=dev-%i.device
+After=dev-%i.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/rail-usb-mount mount %I
+ExecStop=/usr/local/sbin/rail-usb-mount unmount %I

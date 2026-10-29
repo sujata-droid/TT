@@ -53,6 +53,9 @@ GPS_STALE_SECONDS = float(os.environ.get("RAIL_GPS_STALE_SECONDS", "30"))
 CAL_MIN_COUNTS = 5000
 CAL_FACTOR_MIN = 0.5
 CAL_FACTOR_MAX = 1.5
+INCL_CAL_FACTOR_MIN = 0.1
+INCL_CAL_FACTOR_MAX = 5.0
+INCL_CAL_MIN_REFERENCE_MM = 20.0
 
 
 def encoder_distance_m(raw_counts: int, scale_mm_per_count: float, factor: float = 1.0) -> float:
@@ -75,6 +78,35 @@ def compute_encoder_factor(raw_counts: int, true_m: float, scale_mm_per_count: f
         raise ValueError(
             f"Factor {factor:.4f} is outside {CAL_FACTOR_MIN}-{CAL_FACTOR_MAX}. "
             "Check the measured distance and that the wheel did not slip."
+        )
+    return factor
+
+
+def compute_inclination_factor(raw_mm: float, offset_mm: float, reference_mm: float) -> float:
+    raw_mm = float(raw_mm)
+    offset_mm = float(offset_mm)
+    reference_mm = float(reference_mm)
+    if not all(math.isfinite(value) for value in (raw_mm, offset_mm, reference_mm)):
+        raise ValueError("Inclination calibration values must be finite.")
+    if abs(reference_mm) < INCL_CAL_MIN_REFERENCE_MM:
+        raise ValueError(
+            f"Use a known reference of at least {INCL_CAL_MIN_REFERENCE_MM:.0f} mm "
+            "from zero for a reliable scale calibration."
+        )
+    measured_delta = raw_mm - offset_mm
+    if abs(measured_delta) < 1.0:
+        raise ValueError("Reference capture is too close to zero; check the fixture and sensor axis.")
+    if measured_delta * reference_mm <= 0.0:
+        raise ValueError(
+            "Reference sign does not match the sensor reading. Check the reference sign "
+            "and cross-axis orientation before saving."
+        )
+    factor = reference_mm / measured_delta
+    if not INCL_CAL_FACTOR_MIN <= factor <= INCL_CAL_FACTOR_MAX:
+        raise ValueError(
+            f"Calculated factor {factor:.3f} is outside "
+            f"{INCL_CAL_FACTOR_MIN:.1f}-{INCL_CAL_FACTOR_MAX:.1f}; "
+            "check the known reference and sensor mounting."
         )
     return factor
 
@@ -499,12 +531,27 @@ class SharedMemoryBridge:
             "display_twist_pkpk_mm_m": (max(display_twist) - min(display_twist)) if display_twist else 0.0,
         }
 
-    def capture_raw_cross_stats(self, seconds: float = 2.0) -> Dict[str, float]:
+    def capture_raw_cross_stats(
+        self, sample_count: int = 100, interval_s: float = 0.05
+    ) -> Dict[str, float]:
+        if sample_count < 2:
+            raise ValueError("At least two inclinometer samples are required.")
+        if not math.isfinite(interval_s) or interval_s <= 0.0:
+            raise ValueError("Sample interval must be greater than zero.")
         samples: List[float] = []
-        start = time.time()
-        while time.time() - start < seconds:
+        for _ in range(sample_count):
             frame = self.read_next_frame(require_new=True, timeout_s=2.0)
+            if not frame.scl_ok:
+                raise RuntimeError(
+                    "SCL3300 reported an unhealthy sample during capture; "
+                    "check the SPI connection and retry when the sensor is healthy."
+                )
+            if not math.isfinite(frame.cross_level_mm):
+                raise RuntimeError(
+                    "SCL3300 produced a non-finite cross-level during capture."
+                )
             samples.append(frame.cross_level_mm)
+            time.sleep(interval_s)
         if not samples:
             raise RuntimeError("no inclinometer samples captured")
         return {
