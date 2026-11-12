@@ -29,10 +29,10 @@ def at_command(fd: int, command: str, timeout: float = 8.0) -> str:
 
 
 def open_at_port() -> Tuple[int, str]:
-    # EC200U on this BBB exposes its AT interface as ttyUSB6.  Probe the
-    # remaining interfaces as a fallback because firmware builds can differ.
-    for port in ("/dev/ttyUSB6", "/dev/ttyUSB3", "/dev/ttyUSB2", "/dev/ttyUSB1",
-                 "/dev/ttyUSB4", "/dev/ttyUSB5"):
+    # EC200U on this BBB PCB exposes its AT interface via UART1 (ttyS1/ttyO1: P9_24/P9_26)
+    # or via USB (ttyUSB6/USB fallback).
+    for port in ("/dev/ttyS1", "/dev/ttyO1", "/dev/ttyUSB6", "/dev/ttyUSB3",
+                 "/dev/ttyUSB2", "/dev/ttyUSB1", "/dev/ttyUSB4", "/dev/ttyUSB5"):
         if not os.path.exists(port):
             continue
         try:

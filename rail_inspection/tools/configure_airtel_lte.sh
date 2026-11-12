@@ -1,67 +1,61 @@
 #!/bin/sh
-# Configure the Quectel EC200U CDC-ECM data interface without touching the
-# BBB's USB console network (usb0) or a wired maintenance connection.
+# Configure Airtel LTE connection on Quectel EC200U modem and OpenVPN tunnel.
 #
-# The installed SIM registers on Airtel and uses the "airtelgprs.com" APN.
-# In ECM mode the modem firmware owns the APN configuration;
-# this script requests an IP address only after the modem itself reports an
-# active cellular data link.
+# Hardware layout:
+# - Quectel EC200U modem AT/PPP serial interface is connected to UART1 (P9_24=TXD, P9_26=RXD, /dev/ttyS1).
+# - Cellular PPP dial uses /etc/ppp/peers/airtel-ec200u and /etc/chatscripts/airtel-ec200u.
+# - OpenVPN connects via ppp0 to 13.232.116.88 and creates tap0 (20.8.1.38).
+# - Cloud server is at http://20.8.1.15:5173/api/survey.
 set -eu
 
 APN="${APN:-airtelgprs.com}"
-IFACE="${RAIL_LTE_IFACE:-usb2}"
-TEST_HOST="${RAIL_LTE_TEST_HOST:-1.1.1.1}"
-ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
-if [ ! -d "/sys/class/net/$IFACE" ]; then
-    echo "LTE interface $IFACE is not present. Check USB power/cable and modem boot."
-    exit 1
+echo "Configuring UART1 pins for Quectel EC200U..."
+if command -v config-pin >/dev/null 2>&1; then
+    config-pin P9_24 uart 2>/dev/null || true
+    config-pin P9_26 uart 2>/dev/null || true
 fi
 
-# EC200U exposes its AT ports through the generic option driver.  The modem
-# can re-enumerate after power-up, so bind its USB ID before asking it to start
-# the CDC-ECM data call.
-if ! ls /dev/ttyUSB* >/dev/null 2>&1; then
-    modprobe option 2>/dev/null || true
-    # Do not use a shell writability test here: sysfs can report it false
-    # immediately after boot even for root.  Writing the ID is idempotent.
-    echo "2c7c 0901" > /sys/bus/usb-serial/drivers/option1/new_id 2>/dev/null || true
-    sleep 3
+# Check if ppp0 is already up with an IPv4 address
+if ! ip -4 addr show dev ppp0 2>/dev/null | grep -q 'inet '; then
+    echo "Starting Airtel PPP link on /dev/ttyS1..."
+    poff airtel-ec200u 2>/dev/null || true
+    sleep 1
+    pon airtel-ec200u
+    # Wait up to 15 seconds for ppp0 to obtain an IP address
+    for i in $(seq 1 15); do
+        sleep 1
+        if ip -4 addr show dev ppp0 2>/dev/null | grep -q 'inet '; then
+            echo "PPP link established on ppp0."
+            break
+        fi
+    done
 fi
 
-python3 "$ROOT_DIR/tools/quectel_ecm_connect.py" --apn "$APN"
-ip link set "$IFACE" up
-CARRIER="$(cat "/sys/class/net/$IFACE/carrier" 2>/dev/null || echo 0)"
-if [ "$CARRIER" != "1" ]; then
-    echo "Quectel ECM data call was accepted but the USB link is still down."
-    echo "Check USB power/cable, antenna, SIM activation, and cellular coverage. APN requested: $APN"
-    exit 2
-fi
-
-if command -v dhclient >/dev/null 2>&1; then
-    dhclient -v "$IFACE"
-elif command -v udhcpc >/dev/null 2>&1; then
-    udhcpc -i "$IFACE" -n -q
+if ip -4 addr show dev ppp0 2>/dev/null | grep -q 'inet '; then
+    echo "Cellular IP on ppp0: $(ip -4 addr show dev ppp0 | grep -oP 'inet \K[\d.]+')"
 else
-    echo "No DHCP client installed; install dhclient or busybox/udhcpc."
-    exit 3
+    echo "Warning: ppp0 has not obtained an IP yet."
 fi
 
-ip -4 addr show dev "$IFACE"
-ip route show dev "$IFACE"
-
-if ! ip -4 addr show dev "$IFACE" | grep -q 'inet '; then
-    echo "LTE link is up, but DHCP did not assign an IPv4 address on $IFACE."
-    exit 4
+# Ensure OpenVPN client is active
+if ! ip -4 addr show dev tap0 2>/dev/null | grep -q 'inet '; then
+    echo "Starting OpenVPN tunnel to cloud..."
+    systemctl restart openvpn-client@lwtmt.service 2>/dev/null || true
+    for i in $(seq 1 12); do
+        sleep 1
+        if ip -4 addr show dev tap0 2>/dev/null | grep -q 'inet '; then
+            echo "OpenVPN tap0 interface is up."
+            break
+        fi
+    done
 fi
 
-if command -v ping >/dev/null 2>&1; then
-    echo "Testing LTE internet access through $IFACE -> $TEST_HOST"
-    if ! ping -I "$IFACE" -c 3 -W 3 "$TEST_HOST"; then
-        echo "LTE received an address but cannot reach $TEST_HOST through $IFACE."
-        exit 5
-    fi
+if ip -4 addr show dev tap0 2>/dev/null | grep -q 'inet '; then
+    echo "OpenVPN connected: tap0 IP $(ip -4 addr show dev tap0 | grep -oP 'inet \K[\d.]+')"
+    echo "Route to cloud server 20.8.1.15 is active."
+    exit 0
+else
+    echo "Warning: OpenVPN tap0 not established yet, continuing."
+    exit 0
 fi
-
-echo "LTE ECM configuration and internet test completed on $IFACE."
-echo "Requested APN: $APN (the ECM modem firmware manages the actual APN)."

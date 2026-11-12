@@ -27,10 +27,10 @@ def xfer(spi, cmd):
     return resp
 
 def main():
-    print("SCL3300 Inclinometer Direct Test (SPI0)")
+    print("SCL3300 Inclinometer Direct Test (SPI1)")
     spi = spidev.SpiDev()
     try:
-        spi.open(0, 0)
+        spi.open(1, 0)
         spi.max_speed_hz = 500000
         spi.mode = 0
         

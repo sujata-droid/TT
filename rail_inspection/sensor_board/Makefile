@@ -26,7 +26,12 @@ PRU_OBJ = $(PRU_DIR)/encoder_pru0.obj
 PRU_OUT = $(PRU_DIR)/encoder_pru0.out
 PRU_CMD = $(PRU_DIR)/am335x_pru0.cmd
 
-.PHONY: all pru clean install
+PRU1_SRC = $(PRU_DIR)/encoder_pru1.c
+PRU1_OBJ = $(PRU_DIR)/encoder_pru1.obj
+PRU1_OUT = $(PRU_DIR)/encoder_pru1.out
+PRU1_CMD = $(PRU_DIR)/am335x_pru1.cmd
+
+.PHONY: all pru pru1 clean install install-pru1
 
 all: $(TARGET)
 
@@ -39,6 +44,8 @@ $(TARGET): $(OBJS)
 
 pru: $(PRU_OUT)
 
+pru1: $(PRU1_OUT)
+
 $(PRU_OBJ): $(PRU_SRC)
 	$(CLPRU) $(PRU_INC_FLAGS) -v3 -O2 --c99 -c $< \
 		--obj_directory=$(PRU_DIR)/
@@ -48,11 +55,20 @@ $(PRU_OUT): $(PRU_OBJ) $(PRU_CMD)
 		--entry_point=main --warn_sections --diag_warning=225
 	@echo "PRU firmware: $(PRU_OUT)"
 
+$(PRU1_OBJ): $(PRU1_SRC)
+	$(CLPRU) $(PRU_INC_FLAGS) -v3 -O2 --c99 -c $< \
+		--obj_directory=$(PRU_DIR)/
+
+$(PRU1_OUT): $(PRU1_OBJ) $(PRU1_CMD)
+	$(CLPRU) -z $(PRU1_OBJ) $(PRU1_CMD) -o $@ \
+		--entry_point=main --warn_sections --diag_warning=225
+	@echo "PRU1 firmware: $(PRU1_OUT)"
+
 clean:
-	rm -f $(OBJS) $(TARGET) $(PRU_OBJ) $(PRU_OUT)
+	rm -f $(OBJS) $(TARGET) $(PRU_OBJ) $(PRU_OUT) $(PRU1_OBJ) $(PRU1_OUT)
 	@echo "Cleaned."
 
-# Install PRU firmware to /lib/firmware and restart PRU0
+# Install PRU0 firmware to /lib/firmware and restart PRU0
 install: pru
 	sudo cp $(PRU_OUT) /lib/firmware/am335x-pru0-fw
 	@for d in /sys/class/remoteproc/remoteproc*; do \
@@ -61,5 +77,17 @@ install: pru
 			echo am335x-pru0-fw | sudo tee $$d/firmware; sleep 1; \
 			echo start | sudo tee $$d/state; \
 			echo "PRU0 started via $$d"; break; \
+		fi; \
+	done
+
+# Install PRU1 firmware to /lib/firmware and restart PRU1
+install-pru1: pru1
+	sudo cp $(PRU1_OUT) /lib/firmware/am335x-pru1-fw
+	@for d in /sys/class/remoteproc/remoteproc*; do \
+		if grep -q "4a338000.pru" $$d/name 2>/dev/null; then \
+			echo stop  | sudo tee $$d/state; sleep 1; \
+			echo am335x-pru1-fw | sudo tee $$d/firmware; sleep 1; \
+			echo start | sudo tee $$d/state; \
+			echo "PRU1 started via $$d"; break; \
 		fi; \
 	done

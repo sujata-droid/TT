@@ -67,30 +67,39 @@ CONFIG_PIN=$(command -v config-pin 2>/dev/null || echo "")
 echo ""
 echo "[2/7] Configuring pins..."
 
-# SCL3300 SPI0 pins
-# P9_17 = SPI0_CS0   -> CSB on SCL3300
-# P9_18 = SPI0_D1    -> MOSI on SCL3300
-# P9_21 = SPI0_D0    -> MISO on SCL3300
-# P9_22 = SPI0_CLK   -> SCK on SCL3300
-$CONFIG_PIN P9_17 spi_cs   && ok "P9_17 -> spi_cs  (SCL3300 CSB)"   || warn "P9_17 config failed"
-$CONFIG_PIN P9_18 spi       && ok "P9_18 -> spi     (SCL3300 MOSI)"  || warn "P9_18 config failed"
-$CONFIG_PIN P9_21 spi       && ok "P9_21 -> spi     (SCL3300 MISO)"  || warn "P9_21 config failed"
-$CONFIG_PIN P9_22 spi_sclk  && ok "P9_22 -> spi_sclk (SCL3300 SCK)" || warn "P9_22 config failed"
+# SCL3300 SPI1 pins (PCB J5: CSB, SDO, SDI, SCK)
+# P9_28 = SPI1_CS0   -> CSB on SCL3300
+# P9_29 = SPI1_D0    -> MISO/SDO on SCL3300
+# P9_30 = SPI1_D1    -> MOSI/SDI on SCL3300
+# P9_31 = SPI1_CLK   -> SCK on SCL3300
+$CONFIG_PIN P9_28 spi_cs   && ok "P9_28 -> spi_cs  (SCL3300 CSB)"       || warn "P9_28 config failed"
+$CONFIG_PIN P9_29 spi       && ok "P9_29 -> spi     (SCL3300 MISO/SDO)" || warn "P9_29 config failed"
+$CONFIG_PIN P9_30 spi       && ok "P9_30 -> spi     (SCL3300 MOSI/SDI)" || warn "P9_30 config failed"
+$CONFIG_PIN P9_31 spi_sclk  && ok "P9_31 -> spi_sclk (SCL3300 SCK)"    || warn "P9_31 config failed"
 
-$CONFIG_PIN P8_11 qep      && ok "P8_11 -> qep     (Encoder B / eQEP2B)" || warn "P8_11 config failed"
-$CONFIG_PIN P8_12 qep      && ok "P8_12 -> qep     (Encoder A / eQEP2A)" || warn "P8_12 config failed"
+# Rotary Encoder GPIO pins (PCB J3: Pin 3 -> P8_15, Pin 4 -> P8_12)
+($CONFIG_PIN P8_15 gpio || $CONFIG_PIN P8_15 default) && ok "P8_15 -> gpio (Encoder A / GPIO1_15)" || warn "P8_15 config failed"
+($CONFIG_PIN P8_12 gpio || $CONFIG_PIN P8_12 default) && ok "P8_12 -> gpio (Encoder B / GPIO1_12)" || warn "P8_12 config failed"
+
+# GNSS UART4 pins (PCB J15: Pin 5 -> P9_11, Pin 6 -> P9_13)
+$CONFIG_PIN P9_11 uart       && ok "P9_11 -> uart       (GNSS RX / UART4_RXD)"  || warn "P9_11 config failed"
+$CONFIG_PIN P9_13 uart       && ok "P9_13 -> uart       (GNSS TX / UART4_TXD)"  || warn "P9_13 config failed"
+
+# LTE Modem UART1 pins (PCB J1: Pin 5 -> P9_26, Pin 6 -> P9_24)
+$CONFIG_PIN P9_24 uart       && ok "P9_24 -> uart       (LTE TX / UART1_TXD)"   || warn "P9_24 config failed"
+$CONFIG_PIN P9_26 uart       && ok "P9_26 -> uart       (LTE RX / UART1_RXD)"   || warn "P9_26 config failed"
 
 # Verify spidev appeared
-if [ -e /dev/spidev0.0 ]; then
-    ok "/dev/spidev0.0 present"
+if [ -e /dev/spidev1.0 ]; then
+    ok "/dev/spidev1.0 present"
 else
-    warn "/dev/spidev0.0 not found. Try: modprobe spidev"
+    warn "/dev/spidev1.0 not found. Try: modprobe spidev"
     modprobe spidev 2>/dev/null || true
     sleep 1
-    if [ -e /dev/spidev0.0 ]; then
-        ok "/dev/spidev0.0 appeared after modprobe"
+    if [ -e /dev/spidev1.0 ]; then
+        ok "/dev/spidev1.0 appeared after modprobe"
     else
-        warn "/dev/spidev0.0 still missing. Check DTS overlay."
+        warn "/dev/spidev1.0 still missing. Check DTS overlay."
     fi
 fi
 
@@ -134,7 +143,7 @@ echo ""
 echo "[7/7] System verification..."
 
 echo ""
-echo "  SPI device:    $(ls -l /dev/spidev0.0 2>/dev/null || echo 'NOT FOUND')"
+echo "  SPI device:    $(ls -l /dev/spidev1.0 2>/dev/null || echo 'NOT FOUND')"
 echo "  PRU firmware:  NOT REQUIRED for basic eQEP2 encoder test"
 echo "  sensor_service:$(ls -lh sensor_board/sensor_service 2>/dev/null || echo 'NOT BUILT')"
 echo "  Survey dir:    $(ls -ld $SURVEY_DIR 2>/dev/null || echo 'NOT FOUND')"

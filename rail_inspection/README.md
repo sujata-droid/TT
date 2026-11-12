@@ -13,6 +13,16 @@ GUI, sensor service, PRU encoder firmware, and sensor test utilities.
 - `pru/` - PRU0 quadrature encoder firmware.
 - `cloud/` - Render Flask dashboard and `/api/survey` upload endpoint.
 
+## PCB Pin Connections (BeagleBone Black)
+
+| Device / Module | Connector | BBB Pins | Function / Linux Interface |
+|---|---|---|---|
+| **Murata SCL3300** (Inclinometer) | J5 | **P9_28** (SPI1_CS0)<br>**P9_29** (SPI1_D0 / MISO)<br>**P9_30** (SPI1_D1 / MOSI)<br>**P9_31** (SPI1_CLK)<br>**P9_1, P9_2** (GND) | SPI1 interface: `/dev/spidev1.0`<br>Mode 0, 500 kHz, 3.3V supply |
+| **Rotary Encoder** (Chainage) | J3 | **P8_15** (GPIO1_15)<br>**P8_12** (GPIO1_12)<br>J3-1 (+5V), J3-2 (GND) | Linux GPIO edge events: `/dev/gpiochip1`<br>Pin 3 -> P8_15 (Channel A)<br>Pin 4 -> P8_12 (Channel B) |
+| **GNSS Receiver** (u-blox) | J15 | **P9_11** (UART4_RXD)<br>**P9_13** (UART4_TXD)<br>J15-1 (GND), J15-2 (+3.3V) | UART4: `/dev/ttyS4`<br>J15-5 -> P9_11 (RXD)<br>J15-6 -> P9_13 (TXD) |
+| **LTE Modem** (Quectel EC200U) | J1 | **P9_24** (UART1_TXD)<br>**P9_26** (UART1_RXD)<br>J1-1,2 (+5V), J1-4 (GND) | UART1: `/dev/ttyS1` / USB ECM<br>J1-5 -> P9_26 (RXD)<br>J1-6 -> P9_24 (TXD) |
+| **Track Gauge** (Panasonic Laser) | — | **P9_39** (AIN0)<br>System GND | ADC: `/sys/bus/iio/devices/iio:device0/in_voltage0_raw` |
+
 ### Calibration password
 
 Calibration is protected by a password-only prompt (there is no username).
@@ -60,8 +70,9 @@ available.
   console monitor reloads that file while running. The production calibration
   panel uses the same calibration-file format and the sensor service hot-reloads
   the factor while running.
-- `tools/encoder_console_test.py` - PRU encoder console test.
-- `tools/encoder_eqep_console_test.py` - eQEP encoder console test path.
+- `tools/encoder_gpio_console_test.py` - PCB GPIO encoder console test path (P8_15/P8_12).
+- `tools/encoder_console_test.py` - PRU encoder console test (legacy direct BBB wiring).
+- `tools/encoder_eqep_console_test.py` - eQEP encoder console test path (legacy direct BBB wiring).
 
 The PRU console tool can also calculate a calibration factor from raw counts
 and a known distance without opening `/dev/mem`:
@@ -88,14 +99,14 @@ cd /home/debian/trolley
 sudo pkill -9 sensor_service
 sudo pkill -9 python3
 sudo rm -f /dev/shm/rail_sensor_shm
-sudo bash setup_encoder_pru.sh
+sudo bash setup_encoder_gpio.sh
 sudo env RAIL_SCL_AXIS=X RAIL_ENCODER_PPR=400 RAIL_WHEEL_DIAMETER_MM=50 RAIL_ENCODER_INVERT=0 RAIL_SAMPLING_DISTANCE_M=0.25 RAIL_TWIST_BASE_M=3.0 ./sensor_board/sensor_service
 ```
 
 `RAIL_ENCODER_PPR=400` is 400 cycles per channel per encoder revolution.
-The PRU uses 4X quadrature decoding, so the raw encoder count is exactly
-1600 counts per revolution. With a 1:1 encoder-to-wheel drive, that is also
-1600 counts per wheel revolution.
+The PCB uses GPIO edge events on P8_15/P8_12 with 2X decoding (800 counts/rev).
+Do NOT run `setup_encoder_pru.sh` with the PCB: PRU reassigns pin P9_30,
+which is required by the SCL3300 SPI1 bus on the PCB.
 
 Terminal 2:
 

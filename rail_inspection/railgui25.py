@@ -6,16 +6,16 @@ Target  : BeagleBone Black Industrial | Ubuntu | 1024×768 HDMI/Touch
 Stack   : PyQt5 | Python 3.8+
 Version : 5.1.0 — fixed layout: 3-panel DataEntry, popup keyboard, buttons up
 
-Sensor map:
-  Rotary Encoder   → eQEP → /sys/…/eqep/counter/count0/count
-  Gauge Pot(TRS100)→ ADC  → /sys/bus/iio/devices/iio:device0/in_voltage0_raw
-  Inclinometer     → SPI  → /dev/spidev1.0  (Murata SCL3300)
-  GNSS             → UART → /dev/ttyS4      (u-blox NEO-M8P-2)
-  LTE              → USB  → usb2            (Quectel ECM / cdc_ether)
+Sensor map (PCB connections):
+  Rotary Encoder   → GPIO → P8_15 (A / GPIO1_15), P8_12 (B / GPIO1_12) (/dev/gpiochip1)
+  Track Gauge (ADC)→ ADC  → /sys/bus/iio/devices/iio:device0/in_voltage0_raw (P9_39 / AIN0)
+  Inclinometer     → SPI1 → /dev/spidev1.0  (Murata SCL3300: P9_28 CSB, P9_29 MISO, P9_30 MOSI, P9_31 SCK)
+  GNSS             → UART4→ /dev/ttyS4      (u-blox NEO-M8P-2: P9_11 RXD, P9_13 TXD)
+  LTE              → UART1/USB → /dev/ttyS1 / usb2 (Quectel EC200U: P9_24 TXD, P9_26 RXD)
   Display          → HDMI → omapdrm / xrandr
 """
 
-import sys, os, json, csv, time, random, subprocess, hmac, math
+import sys, os, re, json, csv, time, random, subprocess, hmac, math
 from datetime import datetime
 from pathlib import Path
 
@@ -230,20 +230,28 @@ _ENCODER_PPR = float(os.environ.get("RAIL_ENCODER_PPR", "400"))
 _WHEEL_DIAMETER_MM = float(os.environ.get("RAIL_WHEEL_DIAMETER_MM", "50"))
 if _ENCODER_PPR <= 0 or _WHEEL_DIAMETER_MM <= 0:
     raise ValueError("Encoder PPR and wheel diameter must both be greater than zero.")
-_ENCODER_SCALE_MM_PER_COUNT = math.pi * _WHEEL_DIAMETER_MM / (_ENCODER_PPR * 4.0)
+_ENCODER_DECODE = float(os.environ.get("RAIL_ENCODER_DECODE", "2.0"))
+_ENCODER_SCALE_MM_PER_COUNT = math.pi * _WHEEL_DIAMETER_MM / (_ENCODER_PPR * _ENCODER_DECODE)
 _DEF = {
     "csv_dir":   DEFAULT_CSV_DIR,
     "hl_sec":    30,
     "server":    "8.8.8.8",
     "lte_iface": "usb2",
-    # Set this on the BBB with RAIL_CALIBRATION_PASSWORD, or store it in
-    # rail_config.json.  It is intentionally blank in a new installation.
-    "calibration_password": "",
-    "encoder":   {"scale": _ENCODER_SCALE_MM_PER_COUNT, "factor": 1.0, "calibrated": False},
+    "calibration_password": "Patil@123",
+    "encoder":   {"scale": _ENCODER_SCALE_MM_PER_COUNT, "factor": 1.123596, "calibrated": True},
     "adc":       {"zero": 2048,  "mpc": 0.0684, "factor": 1.0, "calibrated": False},
     "incl":      {"offset": 0.0, "factor": 1.0, "calibrated": False},
     "gnss":      {"ref_ch": 0.0, "calibrated": False},
-    "permissible_limits": {"gauge_mm": 9.0, "crosslevel_mm": None, "twist_mm_per_m": 3.0},
+    "permissible_limits": {
+        "track_mode": "straight",
+        "nominal_gauge_mm": 1676.0,
+        "gauge_min_mm": 1670.0,
+        "gauge_max_mm": 1682.0,
+        "gauge_mm": 6.0,
+        "crosslevel_mm": 200.0,
+        "twist_mm_per_m": None,
+        "distance_m": None,
+    },
 }
 def load_cfg():
     if CFG_PATH.exists():
@@ -268,6 +276,8 @@ def load_cfg():
             return d
         except Exception:
             pass
+        pass
+        pass
     return {k: (dict(v) if isinstance(v, dict) else v) for k, v in _DEF.items()}
 
 
@@ -278,18 +288,110 @@ def save_cfg(cfg):
         print(f"[CFG] {e}")
 
 
+NOMINAL_GAUGE_MM = 1676.0
+TRACK_GAUGE_MODES = {
+    "straight": {
+        "label": "Straight (-6 to +6 mm)",
+        "short": "STRAIGHT (-6/+6)",
+        "min_tol": -6.0,
+        "max_tol": 6.0,
+    },
+    "curve_ge_440": {
+        "label": "Curve R>=440m (-6 to +15 mm)",
+        "short": "CURVE >=440m (-6/+15)",
+        "min_tol": -6.0,
+        "max_tol": 15.0,
+    },
+    "curve_lt_440": {
+        "label": "Curve R<440m (up to +20 mm)",
+        "short": "CURVE <440m (+20)",
+        "min_tol": -6.0,
+        "max_tol": 20.0,
+    },
+}
+
+
+def normalize_track_mode(mode):
+    key = str(mode or "straight").strip().lower()
+    aliases = {
+        "straight": "straight",
+        "str": "straight",
+        "curve_ge_440": "curve_ge_440",
+        "curve>=440": "curve_ge_440",
+        "curve_lt_440": "curve_lt_440",
+        "curve<440": "curve_lt_440",
+    }
+    return aliases.get(key, key if key in TRACK_GAUGE_MODES else "straight")
+
+
+def gauge_limits_for_mode(cfg=None, mode=None):
+    """Return (mode_key, nominal_mm, min_tol, max_tol, min_abs_mm, max_abs_mm)."""
+    limits = (cfg or load_cfg()).get("permissible_limits", {})
+    mode_key = normalize_track_mode(mode if mode is not None else limits.get("track_mode", "straight"))
+    nominal = float(limits.get("nominal_gauge_mm") or NOMINAL_GAUGE_MM)
+    spec = TRACK_GAUGE_MODES[mode_key]
+    min_tol = float(spec["min_tol"])
+    max_tol = float(spec["max_tol"])
+    return mode_key, nominal, min_tol, max_tol, nominal + min_tol, nominal + max_tol
+
+
+def set_track_mode(cfg, mode):
+    """Persist selected track geometry mode into cfg['permissible_limits']."""
+    mode_key, nominal, _min_tol, max_tol, min_abs, max_abs = gauge_limits_for_mode(cfg, mode=mode)
+    limits = cfg.setdefault("permissible_limits", {})
+    limits["track_mode"] = mode_key
+    limits["nominal_gauge_mm"] = nominal
+    limits["gauge_min_mm"] = min_abs
+    limits["gauge_max_mm"] = max_abs
+    limits["gauge_mm"] = max_tol
+    if limits.get("crosslevel_mm") is None:
+        limits["crosslevel_mm"] = 200.0
+    limits["twist_mm_per_m"] = None
+    limits["distance_m"] = None
+    if "sync_runtime_thresholds" in globals():
+        sync_runtime_thresholds(cfg)
+    return mode_key
+
+
 def permissible_limits(cfg=None):
     """Editable saved-data and live-display alarm limits."""
-    limits = (cfg or load_cfg()).get("permissible_limits", {})
-    return {"Gauge": limits.get("gauge_mm"), "Crosslevel": limits.get("crosslevel_mm"), "Twist": limits.get("twist_mm_per_m")}
+    active_cfg = cfg or load_cfg()
+    limits = active_cfg.get("permissible_limits", {})
+    mode_key, nominal, min_tol, max_tol, min_abs, max_abs = gauge_limits_for_mode(active_cfg)
+    cross = limits.get("crosslevel_mm")
+    cross_val = 200.0 if cross is None else float(cross)
+    return {
+        "Gauge": max_tol,
+        "GaugeMinMM": min_abs,
+        "GaugeMaxMM": max_abs,
+        "GaugeMinTol": min_tol,
+        "GaugeMaxTol": max_tol,
+        "NominalGaugeMM": nominal,
+        "TrackMode": mode_key,
+        "Crosslevel": cross_val,
+        "Twist": None,
+    }
 
 
 def exceeds_permissible(field, value, cfg=None):
-    limit = permissible_limits(cfg).get(field)
+    norm = re.sub(r"[^a-z]", "", str(field).lower())
     try:
-        return limit is not None and abs(float(value)) > float(limit)
+        num = float(value)
     except (TypeError, ValueError):
         return False
+    active_cfg = cfg if cfg is not None else load_cfg()
+    if norm in ("gauge", "trackgauge", "trackgaugemm", "gaugemm"):
+        _m, _nom, min_tol, max_tol, min_abs, max_abs = gauge_limits_for_mode(active_cfg)
+        if abs(num) > 1000.0:
+            return num < min_abs or num > max_abs
+        return num < min_tol or num > max_tol
+    if norm in ("twist", "twistmmm", "twistmmperm", "cumulativetilt",
+                "distance", "dist", "distm", "chainage"):
+        return False
+    if norm in ("crosslevel", "crosslevelmm", "cross", "crossover", "crosslvl", "absolutetilt"):
+        limit = permissible_limits(active_cfg).get("Crosslevel")
+        return limit is not None and abs(num) > float(limit)
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -299,7 +401,7 @@ EQEP_PATH = ("/sys/devices/platform/ocp/48304000.epwmss"
              "/48304180.eqep/counter/count0/count")
 ADC_PATH  = os.environ.get("RAIL_ADC_PATH", "/sys/bus/iio/devices/iio:device0/in_voltage0_raw")
 SPI_DEV   = "/dev/spidev1.0"
-HW_SIM    = not os.path.exists(EQEP_PATH)
+HW_SIM    = not (os.path.exists(EQEP_PATH) or os.path.exists("/dev/gpiochip1") or os.path.exists("/dev/shm/rail_sensor_shm"))
 
 
 def _sysfs(path, default="0"):
@@ -562,8 +664,18 @@ class PopupKeyboardDialog(QDialog):
         # Space + special row
         sp_row = QHBoxLayout()
         sp_row.setSpacing(4)
-        sp_row.addSpacing(70)
-        for ch, lbl, w in [(" ", "SPACE", 280), ("-", "-", 60), (".", ".", 60), ("/", "/", 60), ("@", "@", 60), ("_", "_", 60)]:
+        for ch, lbl, w in [
+            (" ", "SPACE", 200),
+            ("-", "-", 50),
+            (".", ".", 50),
+            ("/", "/", 50),
+            ("@", "@", 50),
+            ("_", "_", 50),
+            ("#", "#", 50),
+            ("$", "$", 50),
+            ("*", "*", 50),
+            ("!", "!", 50),
+        ]:
             b = QPushButton(lbl)
             b.setFixedSize(w, 36)
             b.setStyleSheet(_KEY_SS)
@@ -887,9 +999,8 @@ class Stepper(QWidget):
         done.clicked.connect(self._pad_commit)
         action_l.addWidget(clr)
         action_l.addWidget(done)
-        pad_l.addLayout(action_l)
-        lay.addWidget(self._pad)
-
+        # Inline pad is retained for backward compatibility if ever shown,
+        # but tapping the stepper opens the clean floating PopupKeyboardDialog.
         self._buf = ""
         self._refresh()
 
@@ -898,9 +1009,20 @@ class Stepper(QWidget):
         self._btn.setText(f"{self._val:.{self._dec}f}{suf}")
 
     def _open_pad(self):
-        self._buf = f"{self._val:.{self._dec}f}"
-        self._pad_disp.setText(self._btn.text())
-        self._pad.setVisible(not self._pad.isVisible())
+        top = self.window()
+        cur_str = f"{self._val:.{self._dec}f}" if self._dec > 0 else f"{int(round(self._val))}"
+        dlg = PopupKeyboardDialog(self._title, cur_str, parent=top)
+        if dlg.exec_() == QDialog.Accepted:
+            v_str = dlg.get_value()
+            if v_str is not None:
+                try:
+                    v = float(v_str.strip())
+                except ValueError:
+                    v = self._val
+                v = max(self._lo, min(self._hi, v))
+                self._val = round(v, self._dec)
+                self._refresh()
+                self.changed.emit(self._val)
 
     def _pad_char(self, ch):
         if ch == "." and "." in self._buf:
@@ -1068,12 +1190,12 @@ class SensorThread(QThread):
             laser_zero_raw = float(os.environ.get("RAIL_LASER_ZERO_RAW", -1.0))
             adc_max_raw = float(os.environ.get("RAIL_ADC_MAX_RAW", 4095.0))
             laser_auto_zero = int(os.environ.get("RAIL_LASER_AUTO_ZERO", 1)) != 0
-            laser_display_min_mm = float(os.environ.get("RAIL_LASER_DISPLAY_MIN_MM", 120.0))
-            laser_display_max_mm = float(os.environ.get("RAIL_LASER_DISPLAY_MAX_MM", 280.0))
-            laser_display_offset_mm = float(os.environ.get("RAIL_LASER_DISPLAY_OFFSET_MM", 120.0))
-            laser_raw_at_plus80 = float(os.environ.get("RAIL_LASER_RAW_AT_PLUS80", 2957.5))
-            laser_raw_at_zero = float(os.environ.get("RAIL_LASER_RAW_AT_ZERO", 1365.0))
-            laser_raw_at_minus80 = float(os.environ.get("RAIL_LASER_RAW_AT_MINUS80", 0.0))
+            laser_display_min_mm = float(os.environ.get("RAIL_LASER_DISPLAY_MIN_MM", 0.0))
+            laser_display_max_mm = float(os.environ.get("RAIL_LASER_DISPLAY_MAX_MM", 237.4))
+            laser_display_offset_mm = float(os.environ.get("RAIL_LASER_DISPLAY_OFFSET_MM", 1523.5))
+            laser_raw_at_plus = float(os.environ.get("RAIL_LASER_RAW_AT_MIN", os.environ.get("RAIL_LASER_RAW_AT_PLUS40", 3936.0)))
+            laser_raw_at_zero = float(os.environ.get("RAIL_LASER_RAW_AT_ZERO", 1970.0))
+            laser_raw_at_minus = float(os.environ.get("RAIL_LASER_RAW_AT_MAX", os.environ.get("RAIL_LASER_RAW_AT_MINUS40", 15.0)))
             if laser_display_min_mm > laser_display_max_mm:
                 laser_display_min_mm, laser_display_max_mm = laser_display_max_mm, laser_display_min_mm
             
@@ -1088,7 +1210,7 @@ class SensorThread(QThread):
                 (hasattr(self, "_laser_zero_raw") and self._laser_zero_raw >= 0.0) or \
                 laser_zero_raw >= 0.0
             # The calibrated laser window deliberately includes raw=0: it is
-            # the measured Panasonic -80 endpoint, not an invalid ADC value.
+            # the measured Panasonic endpoint, not an invalid ADC value.
             if not has_ref or (output_mode != "laser_window" and (raw < 15 or raw > 3060)):
                 gauge = 0.0
             else:
@@ -1102,25 +1224,97 @@ class SensorThread(QThread):
                 curr_laser = laser_min_mm + ratio * (laser_max_mm - laser_min_mm)
                 curr_laser = max(0.0, min(160.0, curr_laser))
                 
-                if output_mode == "laser_window":
-                    span_plus_to_zero = laser_raw_at_plus80 - laser_raw_at_zero
-                    span_zero_to_minus = laser_raw_at_zero - laser_raw_at_minus80
-                    display_center_mm = (laser_display_min_mm + laser_display_max_mm) / 2.0
-                    # Three-point calibration: +80 -> 120, 0 -> 200, -80 -> 280.
-                    if span_plus_to_zero <= 0.0 or span_zero_to_minus <= 0.0 or \
-                            raw < laser_raw_at_minus80 or raw > laser_raw_at_plus80:
-                        gauge = 0.0
-                    elif raw >= laser_raw_at_zero:
-                        gauge = display_center_mm + (laser_raw_at_zero - raw) * \
-                            (display_center_mm - laser_display_min_mm) / span_plus_to_zero
+                cal_file_path = os.environ.get("RAIL_LASER_CAL_FILE", "laser_cal.json")
+                cal_min = laser_raw_at_plus
+                cal_max = laser_raw_at_minus
+                cal_mid = None
+                cal_points = None
+                laser_display_mid_mm = float(os.environ.get("RAIL_LASER_DISPLAY_MID_MM", 162.4))
+                try:
+                    if os.path.exists(cal_file_path):
+                        with open(cal_file_path, "r", encoding="utf-8") as f:
+                            cal_data = json.load(f)
+                        if "points" in cal_data and isinstance(cal_data["points"], list) and len(cal_data["points"]) >= 2:
+                            cal_points = sorted(cal_data["points"], key=lambda p: float(p["mm"]))
+                        cal_type = cal_data.get("calibration_type", "default_120_to_280")
+                        cal_mpc = float(cal_data.get("mm_per_count", 0.03907204))
+                        offset_mm = float(cal_data.get("track_gauge_offset_mm", cal_data.get("offset_mm", laser_display_offset_mm)))
+                        if cal_type in ("default", "default_120_to_280"):
+                            gauge = max(120.0, min(280.0, 280.0 - float(raw) * cal_mpc)) + offset_mm
+                        elif "raw_at_max" in cal_data:
+                            cal_max = float(cal_data["raw_at_max"])
+                            laser_display_max_mm = float(cal_data.get("cal_max_mm", cal_data.get("max_mm", 237.4)))
+                            gauge = max(0.0, laser_display_max_mm - (float(raw) - cal_max) * cal_mpc) + offset_mm
+                        else:
+                            gauge = max(120.0, min(280.0, 280.0 - float(raw) * cal_mpc)) + offset_mm
+                        cross = self._spi()
+                        twist = round(abs(cross) * 0.65 + random.gauss(0, 0.015), 2)
+                        return {"gauge": round(gauge, 1), "cross": round(cross, 2),
+                                "twist": twist, "dist": round(self._dist, 1),
+                                "lat": 0.0, "lon": 0.0, "speed": 0.0}
+                except Exception:
+                    pass
+
+                if cal_points and len(cal_points) >= 2:
+                    raw_val = float(raw)
+                    n = len(cal_points)
+                    r_max = float(cal_points[0]["raw"])
+                    r_min = float(cal_points[-1]["raw"])
+                    if r_max > r_min:
+                        if raw_val >= r_max - 0.5:
+                            gauge = float(cal_points[0]["mm"])
+                        elif raw_val <= r_min + 0.5:
+                            gauge = float(cal_points[-1]["mm"])
+                        else:
+                            gauge = float(cal_points[0]["mm"])
+                            for i in range(n - 1):
+                                r0 = float(cal_points[i]["raw"])
+                                r1 = float(cal_points[i + 1]["raw"])
+                                if r0 >= raw_val >= r1:
+                                    dr = r1 - r0
+                                    if abs(dr) > 1e-6:
+                                        frac = (raw_val - r0) / dr
+                                        gauge = float(cal_points[i]["mm"]) + frac * (float(cal_points[i + 1]["mm"]) - float(cal_points[i]["mm"]))
+                                    break
                     else:
-                        gauge = display_center_mm + (laser_raw_at_zero - raw) * \
-                            (laser_display_max_mm - display_center_mm) / span_zero_to_minus
-                elif output_mode == "absolute":
-                    gauge = curr_laser * adc_factor
-                    gauge = max(0.0, min(160.0, gauge))
+                        if raw_val <= r_max + 5.0:
+                            gauge = float(cal_points[0]["mm"])
+                        elif raw_val >= r_min - 5.0:
+                            gauge = float(cal_points[-1]["mm"])
+                        else:
+                            gauge = float(cal_points[0]["mm"])
+                            for i in range(n - 1):
+                                r0 = float(cal_points[i]["raw"])
+                                r1 = float(cal_points[i + 1]["raw"])
+                                if r0 <= raw_val <= r1:
+                                    dr = r1 - r0
+                                    if abs(dr) > 1e-6:
+                                        frac = (raw_val - r0) / dr
+                                        gauge = float(cal_points[i]["mm"]) + frac * (float(cal_points[i + 1]["mm"]) - float(cal_points[i]["mm"]))
+                                    break
                 else:
-                    gauge = (ref_laser - curr_laser) * adc_factor
+                    d_raw = cal_max - cal_min
+                    if abs(d_raw) < 1.0:
+                        gauge = laser_display_min_mm
+                    else:
+                        r_lo = min(cal_min, cal_max)
+                        r_hi = max(cal_min, cal_max)
+                        clamped_raw = max(r_lo, min(r_hi, float(raw)))
+                        if cal_mid is None and abs(cal_max - cal_min) >= 1.0:
+                            cal_mid = cal_max + 0.775409 * (cal_min - cal_max)
+                            laser_display_mid_mm = 139.5
+                        if cal_mid is not None and (
+                            (cal_min > cal_max and cal_min > cal_mid > cal_max) or
+                            (cal_min < cal_max and cal_min < cal_mid < cal_max)
+                        ):
+                            if (cal_min >= cal_max and clamped_raw >= cal_mid) or (cal_min < cal_max and clamped_raw <= cal_mid):
+                                d1 = cal_mid - cal_min
+                                gauge = laser_display_min_mm + (clamped_raw - cal_min) * (laser_display_mid_mm - laser_display_min_mm) / d1
+                            else:
+                                d2 = cal_max - cal_mid
+                                gauge = laser_display_mid_mm + (clamped_raw - cal_mid) * (laser_display_max_mm - laser_display_mid_mm) / d2
+                        else:
+                            gauge = laser_display_min_mm + (clamped_raw - cal_min) * (laser_display_max_mm - laser_display_min_mm) / d_raw
         else:
             gauge = 1435.0 + (raw - self.cfg["adc"]["zero"]) * self.cfg["adc"]["mpc"] * adc_factor
 
@@ -1143,7 +1337,9 @@ class SensorThread(QThread):
             factor = self.cfg["incl"].get("factor", 1.0)
             return round((raw / 16384.0 * 90.0 - self.cfg["incl"]["offset"]) * factor, 2)
         except Exception:
-            return round(random.gauss(0, 0.15) * self.cfg["incl"].get("factor", 1.0), 2)
+            pass
+        pass
+        return round(random.gauss(0, 0.15) * self.cfg["incl"].get("factor", 1.0), 2)
 
     def _sim(self):
         enc_factor = self.cfg["encoder"].get("factor", 1.0)
@@ -1192,12 +1388,8 @@ class NetThread(QThread):
             self.sleep(15)
 
     def _lte(self):
-        # A carrier signal is not the same as an administratively-UP network
-        # interface.  In particular, EC200U ECM creates usb2 before it has
-        # registered on the mobile network.  Only show LTE bars after that
-        # interface has carrier; show one amber bar while it is acquiring an IP.
-        preferred = self.cfg.get("lte_iface", "usb2")
-        candidates = [preferred, "usb2", "wwan0", "ppp0", "eth1"]
+        preferred = self.cfg.get("lte_iface", "tap0")
+        candidates = [preferred, "tap0", "ppp0", "usb2", "wwan0", "eth0", "eth1"]
         seen = set()
         for iface in candidates:
             if iface in seen:
@@ -1208,13 +1400,14 @@ class NetThread(QThread):
                 continue
             carrier = _sysfs(f"{base}/carrier", "0")
             state = _sysfs(f"{base}/operstate", "down")
-            if carrier == "1" or (iface == "ppp0" and state in {"up", "unknown"}):
+            if carrier == "1" or iface in {"ppp0", "tap0"} or state in {"up", "unknown"}:
                 try:
                     result = subprocess.run(
                         ["ip", "-4", "addr", "show", "dev", iface],
                         capture_output=True, text=True, timeout=2)
-                    if "inet " in result.stdout:
-                        return 3
+                    lines = [ln for ln in result.stdout.splitlines() if "inet " in ln and "169.254." not in ln]
+                    if lines:
+                        return 4 if iface == "tap0" else 3
                 except Exception:
                     pass
                 return 1
@@ -1222,14 +1415,17 @@ class NetThread(QThread):
 
     def _ping(self):
         if HW_SIM: return True
-        try:
-            r = subprocess.run(
-            ["ping", "-c", "1", "-W", "2", "-I",
-             self.cfg.get("lte_iface", "usb2"), self.cfg.get("server", "8.8.8.8")],
-                capture_output=True, timeout=5)
-            return r.returncode == 0
-        except Exception:
-            return False
+        server = self.cfg.get("server", "20.8.1.15")
+        for target in [server, "20.8.0.1", "1.1.1.1"]:
+            try:
+                r = subprocess.run(
+                    ["ping", "-c", "1", "-W", "2", target],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+                if r.returncode == 0:
+                    return True
+            except Exception:
+                pass
+        return False
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1359,8 +1555,6 @@ class CSVLogger:
                 stopped_at = time.time()
                 os.utime(saved_path, (stopped_at, stopped_at))
             except OSError:
-                # Closing the CSV remains successful even on a filesystem
-                # that does not permit timestamp updates.
                 pass
         self._f = self._w = None
         return saved_path
@@ -1565,11 +1759,61 @@ class TopBar(QWidget):
         sep_x = clock_x - sep_gap
         p.fillRect(sep_x, cy - 8, 1, 16, QColor("#3A4555"))
 
+        # Parse battery percentage
+        try:
+            bat_pct = int("".join(c for c in str(self._bat_txt) if c.isdigit()))
+        except Exception:
+            bat_pct = 87
+        bat_pct = max(0, min(100, bat_pct))
+
+        # Battery icon colors: <= 20% Red, > 20% Green
+        if bat_pct <= 20:
+            bat_col = QColor("#FF3B30")      # Bright Red
+            bat_text_col = QColor("#FF3B30")
+        else:
+            bat_col = QColor("#00E676")      # Bright Green
+            bat_text_col = QColor("#00E676")
+
+        # Horizontal Battery Icon Dimensions (Horizontal wide aspect ratio)
+        bat_w = 30
+        bat_h = 14
+        term_w = 4
+        term_h = 7
+        inner_pad = 2
+
         p.setFont(f_battery)
-        p.setPen(QColor("#A8C8A8"))
-        battery_x = sep_x - gap - battery_w
-        p.drawText(battery_x, 0, battery_w, H,
-                   Qt.AlignVCenter | Qt.AlignRight, "▮ " + self._bat_txt)
+        txt_str = f"{bat_pct}%"
+        metrics = p.fontMetrics()
+        txt_w = metrics.horizontalAdvance(txt_str) if hasattr(metrics, "horizontalAdvance") else metrics.width(txt_str)
+
+        total_bat_w = (bat_w + term_w) + 7 + txt_w
+        battery_block_x = sep_x - gap - total_bat_w
+
+        icon_x = battery_block_x
+        icon_y = cy - (bat_h // 2)
+
+        # Draw Horizontal Battery Body
+        p.setPen(QPen(bat_col, 1.8))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(icon_x, icon_y, bat_w, bat_h, 3, 3)
+
+        # Draw Horizontal Battery Terminal (Right side)
+        term_x = icon_x + bat_w
+        term_y = cy - (term_h // 2)
+        p.setPen(Qt.NoPen)
+        p.setBrush(bat_col)
+        p.drawRoundedRect(term_x, term_y, term_w, term_h, 1.5, 1.5)
+
+        # Draw Inner Charge Fill
+        inner_max_w = bat_w - (inner_pad * 2) - 1
+        inner_fill_w = max(1, int(round(inner_max_w * (bat_pct / 100.0))))
+        inner_fill_h = bat_h - (inner_pad * 2)
+        p.fillRect(icon_x + inner_pad + 1, icon_y + inner_pad, inner_fill_w, inner_fill_h, bat_col)
+
+        # Draw Battery Percentage Text
+        text_x = term_x + term_w + 7
+        p.setPen(bat_text_col)
+        p.drawText(text_x, 0, txt_w + 10, H, Qt.AlignVCenter | Qt.AlignLeft, txt_str)
 
         p.setFont(f_title)
         p.setPen(QColor("#F3F6FB"))
@@ -1586,6 +1830,24 @@ class TopBar(QWidget):
 
     def _tick(self):
         self._time_txt = datetime.now().strftime("%H:%M:%S")
+        for b_path in ("/tmp/battery_pct", "/home/debian/trolley/battery_pct.txt"):
+            try:
+                if os.path.exists(b_path):
+                    with open(b_path, "r") as bf:
+                        val = bf.read().strip()
+                        if val:
+                            self._bat_txt = val if "%" in val else f"{val}%"
+                    break
+            except Exception:
+                pass
+        self.update()
+
+    def set_battery(self, pct):
+        try:
+            val = int("".join(c for c in str(pct) if c.isdigit()))
+            self._bat_txt = f"{val}%"
+        except Exception:
+            self._bat_txt = str(pct)
         self.update()
 
     def update_net(self, bars, cloud):
@@ -1596,10 +1858,15 @@ class TopBar(QWidget):
             self._bar_color = QColor("#FF9800");  self._net_col = QColor("#FF9800")
         else:
             self._bar_color = QColor("#EF5350");  self._net_col = QColor("#EF5350")
-        self._net_txt = "LTE" if bars > 0 else "NO LTE"
+        if bars == 4:
+            self._net_txt = "VPN"
+        elif bars > 0:
+            self._net_txt = "LTE"
+        else:
+            self._net_txt = "NO LTE"
         self.setToolTip(
-            ("LTE link connected" if bars > 0 else "LTE link unavailable")
-            + ("; internet reachable" if cloud else "; internet unavailable")
+            ("VPN & LTE connected" if bars == 4 else ("LTE link connected" if bars > 0 else "LTE link unavailable"))
+            + ("; cloud reachable" if cloud else "; cloud unavailable")
         )
         self.update()
 
@@ -1678,11 +1945,66 @@ class ControlBar(QWidget):
 #  METRIC CARD
 # ═════════════════════════════════════════════════════════════════════════════
 _THRESH = {
-    "gauge": (0.5, 1.5),
-    "cross": (0.8, 1.5),
-    "twist": (0.40, 0.80),
+    "gauge": (None, 6.0),
+    "cross": (None, 200.0),
+    "twist": (None, None),
     "dist":  (None, None),
 }
+_GAUGE_BAND = {
+    "mode": "straight",
+    "nominal": NOMINAL_GAUGE_MM,
+    "min_tol": -6.0,
+    "max_tol": 6.0,
+    "min_abs": 1670.0,
+    "max_abs": 1682.0,
+}
+
+
+def sync_runtime_thresholds(cfg=None):
+    """Synchronize live card alarm thresholds with cfg['permissible_limits']."""
+    active_cfg = cfg if cfg is not None else load_cfg()
+    mode_key, nominal, min_tol, max_tol, min_abs, max_abs = gauge_limits_for_mode(active_cfg)
+    limits = active_cfg.get("permissible_limits", {})
+    cross_val = limits.get("crosslevel_mm")
+    cross_limit = 200.0 if cross_val is None else float(cross_val)
+    _GAUGE_BAND.update({
+        "mode": mode_key,
+        "nominal": nominal,
+        "min_tol": min_tol,
+        "max_tol": max_tol,
+        "min_abs": min_abs,
+        "max_abs": max_abs,
+    })
+    _THRESH.update({
+        "gauge": (None, max_tol),
+        "cross": (None, cross_limit),
+        "twist": (None, None),
+        "dist":  (None, None),
+    })
+
+
+def metric_alarm_state(key, fval):
+    """Return ('alarm'|'warn'|'nominal') for live MetricCard values."""
+    if key == "gauge":
+        if abs(fval) > 1000.0:
+            alarmed = (fval < _GAUGE_BAND["min_abs"] or fval > _GAUGE_BAND["max_abs"])
+        else:
+            alarmed = (fval < _GAUGE_BAND["min_tol"] or fval > _GAUGE_BAND["max_tol"])
+        return "alarm" if alarmed else "nominal"
+    if key in ("twist", "dist"):
+        return "nominal"
+    if key == "cross":
+        _warn, alarm = _THRESH.get("cross", (None, 200.0))
+        if alarm is not None and abs(fval) > float(alarm):
+            return "alarm"
+        return "nominal"
+    warn, alarm = _THRESH.get(key, (None, None))
+    dev = abs(fval)
+    if alarm is not None and dev >= float(alarm):
+        return "alarm"
+    if warn is not None and dev >= float(warn):
+        return "warn"
+    return "nominal"
 
 
 class MetricCard(QFrame):
@@ -1813,36 +2135,44 @@ class MetricCard(QFrame):
             " padding-bottom: 14px;"
             "}")
 
-    def _apply_val_style(self, color):
+    def _apply_val_style(self, color, font_size=84):
         self._val.setStyleSheet(
             f"color:{color}; background:transparent; border:none;"
             f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
-            f" font-size:84pt; font-weight:700; letter-spacing:-3px;")
+            f" font-size:{font_size}pt; font-weight:700; letter-spacing:-3px;")
 
     def refresh(self, val):
-        self._val.setText(str(val))
-        warn, alarm = _THRESH.get(self.key, (None, None))
-        dev = abs(float(val))
-        if alarm is not None and dev >= alarm:
+        self._last_raw_val = val
+        try:
+            fval = float(val)
+            txt = f"{fval:.2f}"
+            state = metric_alarm_state(self.key, fval)
+        except (ValueError, TypeError):
+            txt = str(val)
+            state = "nominal"
+        self._val.setText(txt)
+        if state == "alarm":
             vc  = RED
             bg  = (f"QFrame#Card{{background:#FFEBEE; border:1px solid #DDE3EA;"
                    f" border-left:4px solid {RED}; border-radius:10px;}}")
             self._apply_badge("ALARM", RED)
-        elif warn is not None and dev >= warn:
+            alert_txt = "⚠  ALARM"
+        elif state == "warn":
             vc  = WARN
             bg  = (f"QFrame#Card{{background:#FFF3E0; border:1px solid #DDE3EA;"
                    f" border-left:4px solid {WARN}; border-radius:10px;}}")
             self._apply_badge("MONITOR", WARN)
+            alert_txt = "△  WARN"
         else:
             vc  = self.color
-            txt = ""
             bg  = (f"QFrame#Card{{background:#FFFFFF; border:1px solid #DDE3EA;"
                    f" border-left:4px solid {self.color}; border-radius:10px;}}")
             self._apply_badge("NOMINAL", self.color)
-        self._apply_val_style(vc)
+            alert_txt = ""
+        font_size = 72 if len(txt) >= 7 else (78 if len(txt) >= 6 else 84)
+        self._apply_val_style(vc, font_size=font_size)
         self._apply_unit_style()
-        self._alert.setText("⚠  ALARM" if (alarm is not None and dev >= alarm)
-                            else ("△  WARN" if (warn is not None and dev >= warn) else ""))
+        self._alert.setText(alert_txt)
         self.setStyleSheet(bg)
 
 
@@ -1861,6 +2191,7 @@ class GraphPage(QWidget):
         hdr = QHBoxLayout()
         back = _btn("← BACK", "BC", 46, 140)
         back.clicked.connect(self.sig_back)
+
         self._lbl = QLabel("—")
         self._lbl.setStyleSheet(
             f"color:{CYAN}; font-size:11pt; font-weight:bold; letter-spacing:2px;")
@@ -2091,7 +2422,7 @@ class EncoderCal(QWidget):
         current = self._enc().get("factor", 1.0)
         dialog = NumpadDialog(
             "Calibration factor", f"{current:.4f}", decimals=4,
-            min_val=0.5, max_val=1.5, unit="x",
+            min_val=0.5, max_val=2.5, unit="x",
             parent=self.window()
         )
         if dialog.exec_() == QDialog.Accepted and dialog.get_value() is not None:
@@ -2117,10 +2448,110 @@ class EncoderCal(QWidget):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  TRACK MODE SELECTOR (DISPLAY + CALIBRATION)
+# ═════════════════════════════════════════════════════════════════════════════
+class TrackModeSelector(QWidget):
+    """Segmented track geometry selector controlling Track Gauge red limits."""
+    mode_changed = pyqtSignal(str)
+
+    def __init__(self, initial_mode="straight", compact=False, parent=None):
+        super().__init__(parent)
+        self._compact = compact
+        self._mode = normalize_track_mode(initial_mode)
+        self._buttons = {}
+
+        if compact:
+            lay = QHBoxLayout(self)
+            lay.setContentsMargins(8, 2, 8, 2)
+            lay.setSpacing(6)
+            lay.addWidget(_lbl("TRACK:", "#4A5568", 9, True))
+            btn_h = 34
+            font_pt = 9
+        else:
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(6)
+            lay.addWidget(_lbl(
+                "Track Geometry Mode (Nominal Gauge 1676 mm | Crosslevel ±200 mm):",
+                "#4A5568", 10, True))
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            btn_h = 44
+            font_pt = 10
+
+        self._btn_font_pt = font_pt
+        container = lay if compact else row
+        for key in ("straight", "curve_ge_440", "curve_lt_440"):
+            spec = TRACK_GAUGE_MODES[key]
+            btn = QPushButton(spec["short"])
+            btn.setCheckable(True)
+            btn.setFixedHeight(btn_h)
+            btn.clicked.connect(lambda _checked=False, k=key: self.set_mode(k, emit_signal=True))
+            container.addWidget(btn, 1 if not compact else 0)
+            self._buttons[key] = btn
+
+        self._summary = QLabel("")
+        self._summary.setStyleSheet(
+            f"background:{CYAN_LT}; border:1px solid {CYAN}; border-radius:6px;"
+            f" color:{CYAN}; font-family:'Roboto Mono','Courier New',monospace;"
+            f" font-size:{'8.5' if compact else '9.5'}pt; font-weight:bold;"
+            f" padding:{'3px 8px' if compact else '6px 10px'};"
+        )
+        if compact:
+            lay.addStretch(1)
+            lay.addWidget(self._summary)
+        else:
+            lay.addLayout(row)
+            lay.addWidget(self._summary)
+
+        self.set_mode(self._mode, emit_signal=False)
+
+    def mode(self):
+        return self._mode
+
+    def set_mode(self, mode, emit_signal=False):
+        norm = normalize_track_mode(mode)
+        changed = (norm != self._mode)
+        self._mode = norm
+        pt = self._btn_font_pt
+        for key, btn in self._buttons.items():
+            active = (key == norm)
+            btn.blockSignals(True)
+            btn.setChecked(active)
+            btn.blockSignals(False)
+            if active:
+                btn.setStyleSheet(
+                    f"QPushButton{{background:#E3EEFA; border:2px solid {CYAN};"
+                    f" border-radius:7px; color:{CYAN}; font-size:{pt}pt;"
+                    f" font-weight:bold; padding:0px 10px;}}"
+                )
+            else:
+                btn.setStyleSheet(
+                    f"QPushButton{{background:#FFFFFF; border:1px solid #C8D0DA;"
+                    f" border-radius:7px; color:#4A5568; font-size:{pt}pt;"
+                    f" font-weight:600; padding:0px 10px;}}"
+                    f"QPushButton:pressed{{background:#EEF3F8;}}"
+                )
+        spec = TRACK_GAUGE_MODES[norm]
+        lo_mm = int(round(NOMINAL_GAUGE_MM + spec["min_tol"]))
+        hi_mm = int(round(NOMINAL_GAUGE_MM + spec["max_tol"]))
+        if self._compact:
+            self._summary.setText(f"GAUGE {lo_mm}-{hi_mm} mm | CL ±200")
+        else:
+            self._summary.setText(
+                f"Active Limit: Gauge {lo_mm}-{hi_mm} mm ({spec['min_tol']:+.0f}/{spec['max_tol']:+.0f} mm)"
+                f"  |  Crosslevel: ±200 mm  |  Twist & Distance: No limit"
+            )
+        if emit_signal and changed:
+            self.mode_changed.emit(norm)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  ADC / GAUGE CAL
 # ═════════════════════════════════════════════════════════════════════════════
 class ADCCal(QWidget):
     saved = pyqtSignal(str, dict)
+    sig_track_mode = pyqtSignal(str)
 
     def __init__(self, cfg):
         super().__init__()
@@ -2129,6 +2560,12 @@ class ADCCal(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 20, 20, 20)
         lay.setSpacing(14)
+
+        self._track_selector = TrackModeSelector(
+            gauge_limits_for_mode(cfg)[0], compact=False
+        )
+        self._track_selector.mode_changed.connect(self._on_mode_changed)
+        lay.addWidget(self._track_selector)
 
         fr = QHBoxLayout()
         fr.addWidget(_lbl("Calibration factor:", "#4A5568", 10, True))
@@ -2143,8 +2580,18 @@ class ADCCal(QWidget):
         lay.addWidget(sv)
         lay.addStretch()
 
+    def set_track_mode(self, mode):
+        if hasattr(self, "_track_selector"):
+            self._track_selector.set_mode(mode, emit_signal=False)
+
+    def _on_mode_changed(self, mode):
+        norm = set_track_mode(self.cfg, mode)
+        save_cfg(self.cfg)
+        self.sig_track_mode.emit(norm)
+
     def _do_save(self):
         factor = self._factor_s.value()
+        set_track_mode(self.cfg, self._track_selector.mode())
         self.cfg["adc"].update({"factor": factor, "calibrated": True})
         save_cfg(self.cfg)
         self.saved.emit("adc", self.cfg["adc"])
@@ -2526,15 +2973,23 @@ class CalibrationPasswordDialog(QDialog):
         # Touchscreen keyboard: the QLineEdit remains masked at all times.
         self._uppercase = False
         self._letter_keys = []
+        self._shift_btn = None
         keyboard = QVBoxLayout()
-        keyboard.setSpacing(8)
-        key_style = (
+        keyboard.setSpacing(6)
+        self._key_style = (
             "QPushButton { background:#F8FAFB; border:1px solid #D8E1EB;"
-            " border-radius:7px; color:#334155; font-size:16pt; font-weight:700; }"
+            " border-radius:7px; color:#334155; font-size:15pt; font-weight:700; }"
             "QPushButton:pressed { background:#FFF3E0; border-color:#C06000; }")
+        key_style = self._key_style
+
+        # Numbers and QWERTY rows
         for row_index, row_text in enumerate(("1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM")):
             row = QHBoxLayout()
-            row.setSpacing(8)
+            row.setSpacing(6)
+            if row_index == 2:
+                row.addSpacing(max(12, key_width // 4))
+            elif row_index == 3:
+                row.addSpacing(max(24, key_width // 2))
             for char in row_text:
                 display_char = char if row_index == 0 else char.lower()
                 key = QPushButton(display_char)
@@ -2548,9 +3003,23 @@ class CalibrationPasswordDialog(QDialog):
                 row.addWidget(key)
             row.addStretch()
             keyboard.addLayout(row)
+
+        # Special characters row
+        sp_row = QHBoxLayout()
+        sp_row.setSpacing(6)
+        for char in ("@", "#", "$", "%", "-", "_", ".", "/", "*", "!", "?"):
+            key = QPushButton(char)
+            key.setFixedSize(key_width, key_height)
+            key.setStyleSheet(key_style)
+            key.clicked.connect(lambda _, value=char: self._append_key(value))
+            sp_row.addWidget(key)
+        sp_row.addStretch()
+        keyboard.addLayout(sp_row)
+
+        # Action row
         actions = QHBoxLayout()
-        actions.setSpacing(8)
-        action_width = max(100, min(180, key_width * 2))
+        actions.setSpacing(6)
+        action_width = max(90, min(140, key_width * 2))
         for text, width, action in (
             ("SHIFT", action_width, self._toggle_case),
             ("SPACE", action_width * 2, lambda: self._append_key(" ")),
@@ -2561,6 +3030,8 @@ class CalibrationPasswordDialog(QDialog):
             key.setFixedSize(width, key_height)
             key.setStyleSheet(key_style)
             key.clicked.connect(action)
+            if text == "SHIFT":
+                self._shift_btn = key
             actions.addWidget(key)
         actions.addStretch()
         keyboard.addLayout(actions)
@@ -2595,6 +3066,15 @@ class CalibrationPasswordDialog(QDialog):
 
     def _toggle_case(self):
         self._uppercase = not self._uppercase
+        if self._shift_btn:
+            self._shift_btn.setText("SHIFT ON" if self._uppercase else "SHIFT")
+            if self._uppercase:
+                self._shift_btn.setStyleSheet(
+                    "QPushButton { background:#FFF3E0; border:2px solid #C06000;"
+                    " border-radius:7px; color:#C06000; font-size:13pt; font-weight:700; }"
+                )
+            else:
+                self._shift_btn.setStyleSheet(self._key_style)
         for key in self._letter_keys:
             key.setText(key.text().upper() if self._uppercase else key.text().lower())
         self._password.setFocus()
@@ -2611,6 +3091,7 @@ class CalibrationPasswordDialog(QDialog):
 
 class CalibrationPage(QWidget):
     sig_back = pyqtSignal()
+    sig_track_mode = pyqtSignal(str)
 
     def __init__(self, cfg, sensor=None):
         super().__init__()
@@ -2666,6 +3147,8 @@ class CalibrationPage(QWidget):
             w = Cls(cfg, sensor) if key == "encoder" else Cls(cfg)
             if hasattr(w, "saved"):
                 w.saved.connect(self._on_saved)
+            if hasattr(w, "sig_track_mode"):
+                w.sig_track_mode.connect(self.sig_track_mode.emit)
 
             sc = QScrollArea()
             sc.setWidgetResizable(True)
@@ -2714,6 +3197,10 @@ class CalibrationPage(QWidget):
                     "QPushButton:hover{ background:#F8FAFB; border-color:#BAC8D8; }"
                     "QPushButton:pressed{ background:#EEF3F8; }")
         self._stack.setCurrentIndex(idx)
+
+    def set_track_mode(self, mode):
+        for sel in self.findChildren(TrackModeSelector):
+            sel.set_mode(mode, emit_signal=False)
 
     def _on_saved(self, key, values):
         for i, (k, label, color, *_) in enumerate(_SENSORS):
@@ -3178,20 +3665,31 @@ class CSVViewerPage(QWidget):
         hdr.setContentsMargins(14, 12, 14, 12)
         hdr.setSpacing(12)
 
-        back = _btn("<  BACK TO DASHBOARD", "CSVBack", 52, 220)
-        back.clicked.connect(self.sig_back)
+        self._view_mode = "files"
+        self._current_loaded_path = ""
+        self._all_selected = False
+        self._back_btn = _btn("<  BACK TO DASHBOARD", "CSVBack", 52, 220)
+        self._back_btn.clicked.connect(self._on_back_clicked)
+        back = self._back_btn
 
-        export_btn = _btn("COPY SELECTED CSVs TO USB", "CSVExport", 52, 280)
+
+        self._export_btn = _btn("EXPORT TO USB (EXCEL)", "CSVExport", 52, 280)
+        export_btn = self._export_btn
         export_btn.clicked.connect(self._export_selected_to_usb)
-        top_refresh = _btn("REFRESH FILE LIST", "CSVRefresh", 52, 180)
+        self._select_all_btn = _btn("SELECT ALL", "CSVRefresh", 52, 130)
+        self._select_all_btn.clicked.connect(self._toggle_select_all)
+        self._top_refresh = _btn("REFRESH FILE LIST", "CSVRefresh", 52, 175)
+        top_refresh = self._top_refresh
         top_refresh.clicked.connect(self._refresh_list)
 
         # Matching side areas keep the primary USB action exactly centered.
         right_actions = QWidget()
-        right_actions.setFixedWidth(220)
+        right_actions.setFixedWidth(320)
         right_layout = QHBoxLayout(right_actions)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addStretch(1)
+        right_layout.setSpacing(8)
+        right_layout.addWidget(self._select_all_btn)
         right_layout.addWidget(top_refresh)
 
         hdr.addWidget(back)
@@ -3274,6 +3772,7 @@ class CSVViewerPage(QWidget):
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         QScroller.grabGesture(self._table.viewport(), QScroller.TouchGesture)
         QScroller.grabGesture(self._table.viewport(), QScroller.LeftMouseButtonGesture)
+        self._table.cellClicked.connect(self._on_cell_clicked)
         rl.addWidget(self._table, 1)
 
         body.addWidget(right, 1)
@@ -3286,73 +3785,122 @@ class CSVViewerPage(QWidget):
         self._csv_dir = path
 
     def load_latest(self):
+        self._show_file_list()
+
+    def _on_back_clicked(self):
+        if getattr(self, "_view_mode", "files") == "data":
+            self._show_file_list()
+        else:
+            self.sig_back.emit()
+
+    def _show_file_list(self):
+        self._view_mode = "files"
+        self._current_loaded_path = ""
+        self._all_selected = False
+        self._back_btn.setText("<  BACK TO DASHBOARD")
+        self._export_btn.setText("EXPORT TO USB (EXCEL)")
+        if hasattr(self, "_select_all_btn") and True:
+            self._select_all_btn.setVisible(True)
+            self._select_all_btn.setText("SELECT ALL")
+        pass
+        pass
+        if hasattr(self, "_top_refresh"):
+            self._top_refresh.setVisible(True)
         self._refresh_list()
+        return
+        pass
+        pass
+        if hasattr(self, "_top_refresh"):
+            self._top_refresh.setVisible(True)
+        pass
+
+    def _toggle_select_all(self):
+        if getattr(self, "_view_mode", "files") != "files":
+            return
+        self._all_selected = not getattr(self, "_all_selected", False)
+        target_state = Qt.Checked if self._all_selected else Qt.Unchecked
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, 0)
+            if item:
+                item.setCheckState(target_state)
+        if hasattr(self, "_select_all_btn") and True:
+            self._select_all_btn.setVisible(True)
+            self._select_all_btn.setText("DESELECT ALL" if self._all_selected else "SELECT ALL")
+
+    def _on_cell_clicked(self, row, col):
+        if getattr(self, "_view_mode", "files") == "files":
+            if col == 0:
+                item = self._table.item(row, 0)
+                if item:
+                    new_state = Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked
+                    item.setCheckState(new_state)
+            else:
+                file_item = self._table.item(row, 1)
+                if file_item:
+                    file_path = file_item.data(Qt.UserRole)
+                    if file_path and os.path.exists(file_path):
+                        self._load_file(file_path)
 
     def _refresh_list(self):
-        while self._file_list_layout.count() > 1:
-            item = self._file_list_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self._view_mode = "files"
+        self._current_loaded_path = ""
+        self._back_btn.setText("<  BACK TO DASHBOARD")
+        self._export_btn.setText("EXPORT TO USB (EXCEL)")
+        if hasattr(self, "_select_all_btn") and True:
+            self._select_all_btn.setVisible(True)
+        pass
+        pass
+        if hasattr(self, "_top_refresh"):
+            self._top_refresh.setVisible(True)
 
-        files = sorted(Path(self._csv_dir).glob("*.csv"),
-                       key=lambda p: p.stat().st_mtime, reverse=True)
-        # List file details only.  CSV contents are deliberately not read here,
-        # so this page remains fast even when files contain many samples.
+        csv_path = Path(self._csv_dir)
+        files = []
+        if csv_path.is_dir():
+            files = sorted(csv_path.glob("*.csv"),
+                           key=lambda p: p.stat().st_mtime, reverse=True)
+
         self._table.clear()
         self._table.setColumnCount(3)
         self._table.setRowCount(len(files))
-        self._table.setHorizontalHeaderLabels(["SELECT", "CSV FILE (START TIME)", "END TIME"])
+        self._table.setHorizontalHeaderLabels(["SELECT", "CSV FILE (TAP TO VIEW DATA)", "RECORDED TIME & SIZE"])
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
-        self._table.setColumnWidth(0, 90)
+        self._table.setColumnWidth(0, 95)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+
         for row, f in enumerate(files):
-            ended_at = datetime.fromtimestamp(f.stat().st_mtime).strftime("%d-%m-%Y  %H:%M:%S")
-            details = (f.name, ended_at)
-            # A large explicit check button makes each selection obvious on
-            # the touchscreen: blue square with a white tick when selected.
-            check_cell = QWidget()
-            check_layout = QHBoxLayout(check_cell)
-            check_layout.setContentsMargins(0, 0, 0, 0)
-            check_layout.addStretch()
-            checkbox = QPushButton()
-            checkbox.setCheckable(True)
-            checkbox.setFixedSize(30, 30)
-            checkbox.setStyleSheet(
-                "QPushButton { background:#FFFFFF; border:2px solid #2F80ED; border-radius:4px; color:#FFFFFF;"
-                " font-size:20pt; font-weight:bold; padding:0px; }"
-                "QPushButton:checked { background:#2F80ED; border-color:#2F80ED; color:#FFFFFF; }"
-                "QPushButton:pressed { background:#1565C0; }")
-            checkbox.toggled.connect(
-                lambda checked, button=checkbox: button.setText("✓" if checked else ""))
-            check_layout.addWidget(checkbox)
-            check_layout.addStretch()
-            check_cell._csv_checkbox = checkbox
-            self._table.setCellWidget(row, 0, check_cell)
-            for column, value in enumerate(details, start=1):
-                item = QTableWidgetItem(value)
-                item.setTextAlignment(Qt.AlignVCenter | (Qt.AlignLeft if column == 1 else Qt.AlignCenter))
-                if column == 1:
-                    item.setData(Qt.UserRole, str(f))
-                self._table.setItem(row, column, item)
-        self._row_lbl.setText("Select one or more files, then press COPY SELECTED CSVs TO USB.")
+            check_item = QTableWidgetItem("  Select")
+            check_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            check_item.setCheckState(Qt.Unchecked)
+            check_item.setTextAlignment(Qt.AlignCenter)
+            self._table.setItem(row, 0, check_item)
 
-        # This hidden legacy list is retained only to keep the layout compatible.
-        for f in files:
-            btn = QPushButton(f.name)
-            btn.setObjectName("EF")
-            btn.setFixedHeight(44)
-            btn.setStyleSheet(
-                f"QPushButton{{background:#0a0a0a; border:1px solid #1e1e1e;"
-                f" border-radius:5px; color:{MAGI}; font-size:7pt;"
-                f" font-family:'Courier New'; text-align:left; padding-left:8px;}}"
-                f"QPushButton:pressed{{background:#140020; border-color:{MAGI};}}")
-            btn.clicked.connect(lambda _, p=str(f): self._load_file(p))
-            self._file_list_layout.insertWidget(
-                self._file_list_layout.count() - 1, btn)
+            name_item = QTableWidgetItem(f"📄  {f.name}")
+            name_item.setData(Qt.UserRole, str(f))
+            name_item.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+            font = name_item.font()
+            font.setPointSize(9)
+            font.setBold(True)
+            name_item.setFont(font)
+            self._table.setItem(row, 1, name_item)
 
-        if not files:
-            empty = QLabel("No CSV files found")
-            empty.setStyleSheet("color:#333; font-size:8pt; padding:8px;")
-            self._file_list_layout.insertWidget(0, empty)
+            stat = f.stat()
+            ended_at = datetime.fromtimestamp(stat.st_mtime).strftime("%d-%m-%Y  %H:%M:%S")
+            size_kb = stat.st_size / 1024.0
+            info_item = QTableWidgetItem(f"{ended_at}  ({size_kb:.1f} KB)")
+            info_item.setTextAlignment(Qt.AlignCenter)
+            self._table.setItem(row, 2, info_item)
+
+        now_str = datetime.now().strftime("%H:%M:%S")
+        if files:
+            self._row_lbl.setText(
+                f"{len(files)} survey file(s) found. Refreshed at {now_str}. "
+                f"Tap file name to VIEW records, or tick checkboxes to COPY TO USB."
+            )
+        else:
+            self._row_lbl.setText(
+                f"No CSV files found in {self._csv_dir}. Refreshed at {now_str}."
+            )
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -3376,14 +3924,18 @@ class CSVViewerPage(QWidget):
     def _export_selected_to_usb(self):
         """Copy only rows selected in the saved-CSV list to the USB drive."""
         selected = []
-        for row in range(self._table.rowCount()):
-            check_cell = self._table.cellWidget(row, 0)
-            checkbox = getattr(check_cell, "_csv_checkbox", None)
-            file_item = self._table.item(row, 1)
-            if checkbox and checkbox.isChecked() and file_item:
-                selected.append(file_item.data(Qt.UserRole))
+        if getattr(self, "_view_mode", "files") == "data" and getattr(self, "_current_loaded_path", ""):
+            selected = [self._current_loaded_path]
+        else:
+            for row in range(self._table.rowCount()):
+                file_item = self._table.item(row, 1)
+                check_item = self._table.item(row, 0)
+                if check_item and check_item.checkState() == Qt.Checked and file_item:
+                    path = file_item.data(Qt.UserRole)
+                    if path:
+                        selected.append(path)
         if not selected:
-            QMessageBox.information(self, "USB export", "Tick at least one CSV file checkbox first.")
+            QMessageBox.information(self, "USB export", "Tick at least one CSV file checkbox first (or tap a file name to view and export it).")
             return
 
         self.sig_before_export.emit()
@@ -3398,7 +3950,10 @@ class CSVViewerPage(QWidget):
             return
         detail = (result.stdout or result.stderr or "USB export failed.").strip()
         if result.returncode == 0:
-            QMessageBox.information(self, "USB export complete", detail)
+            QMessageBox.information(
+                self, "USB export complete",
+                detail + "\n\nNote: Each survey is exported as one password-protected .zip archive containing both .csv and .xlsx."
+            )
         else:
             QMessageBox.warning(self, "USB export", detail)
 
@@ -3417,7 +3972,10 @@ class CSVViewerPage(QWidget):
             return
         detail = (result.stdout or result.stderr or "USB export failed.").strip()
         if result.returncode == 0:
-            QMessageBox.information(self, "USB export complete", detail)
+            QMessageBox.information(
+                self, "USB export complete",
+                detail + "\n\nNote: Each survey is exported as one password-protected .zip archive containing both .csv and .xlsx."
+            )
         else:
             QMessageBox.warning(self, "USB export", detail)
 
@@ -3441,17 +3999,29 @@ class CSVViewerPage(QWidget):
             return
         detail = (result.stdout or result.stderr or "USB export failed.").strip()
         if result.returncode == 0:
-            QMessageBox.information(self, "USB export complete", detail)
+            QMessageBox.information(
+                self, "USB export complete",
+                detail + "\n\nNote: Each survey is exported as one password-protected .zip archive containing both .csv and .xlsx."
+            )
         else:
             QMessageBox.warning(self, "USB export", detail)
 
     def _load_file(self, path):
+        self._view_mode = "data"
+        self._current_loaded_path = str(path)
+        self._back_btn.setText("<  BACK TO FILE LIST")
+        self._export_btn.setText("COPY THIS SURVEY TO USB")
+        if hasattr(self, "_select_all_btn"):
+            self._select_all_btn.setVisible(False)
+        if hasattr(self, "_top_refresh"):
+            self._top_refresh.setVisible(False)
         try:
             with open(path, newline="") as f:
                 reader = csv.DictReader(f)
                 rows = list(reader)
                 headers = reader.fieldnames or []
 
+            cfg = load_cfg()
             self._table.clear()
             self._table.setRowCount(len(rows))
             self._table.setColumnCount(len(headers))
@@ -3461,14 +4031,14 @@ class CSVViewerPage(QWidget):
                 for c, h in enumerate(headers):
                     item = QTableWidgetItem(str(row.get(h, "")))
                     item.setTextAlignment(Qt.AlignCenter)
-                    if exceeds_permissible(h, row.get(h, "")):
+                    if exceeds_permissible(h, row.get(h, ""), cfg=cfg):
                         item.setForeground(QBrush(QColor(RED)))
                         item.setBackground(QBrush(QColor(RED_LT)))
                     self._table.setItem(r, c, item)
 
             name = Path(path).name
             self._row_lbl.setText(
-                f"{len(rows)} rows  ·  {len(headers)} columns  ·  {name}")
+                f"Viewing {name}  ·  {len(rows)} records  ·  (Tap '< BACK TO FILE LIST' to return)")
         except Exception as e:
             self._row_lbl.setText(f"Error loading file: {e}")
 
@@ -3486,13 +4056,14 @@ _METRICS = [
 
 
 class DashboardPage(QWidget):
-    sig_toggle = pyqtSignal(bool)
-    sig_pause  = pyqtSignal(bool)
-    sig_entry  = pyqtSignal()
-    sig_csv    = pyqtSignal()
-    sig_cal    = pyqtSignal()
+    sig_toggle     = pyqtSignal(bool)
+    sig_pause      = pyqtSignal(bool)
+    sig_entry      = pyqtSignal()
+    sig_csv        = pyqtSignal()
+    sig_cal        = pyqtSignal()
+    sig_track_mode = pyqtSignal(str)
 
-    def __init__(self):
+    def __init__(self, initial_mode="straight"):
         super().__init__()
         self._running = False
         self._paused  = False
@@ -3692,6 +4263,21 @@ class DashboardPage(QWidget):
     def set_station_no(self, station_no):
         self._station_no.setText(f"STN NO: {station_no or '--'}")
 
+    def set_track_mode(self, mode):
+        if hasattr(self, "_track_selector"):
+            self._track_selector.set_mode(mode, emit_signal=False)
+
+    def refresh_cards_limits(self):
+        for card in self._cards.values():
+            if hasattr(card, "_last_display"):
+                card._last_display = None
+            if hasattr(card, "_last_visual_state"):
+                card._last_visual_state = None
+            if hasattr(card, "_last_band_sig"):
+                card._last_band_sig = None
+            val = getattr(card, "_last_raw_val", card._val.text())
+            card.refresh(val)
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  MAIN APPLICATION
@@ -3703,6 +4289,7 @@ class TrackApp(QWidget):
     def __init__(self):
         super().__init__()
         self.cfg     = load_cfg()
+        sync_runtime_thresholds(self.cfg)
         self.logger  = CSVLogger()
         self.history = {k: [] for k, *_ in _METRICS}
 
@@ -3741,16 +4328,20 @@ class TrackApp(QWidget):
         self.topbar.sig_close_requested.connect(self.close)
         self.stack = QStackedWidget()
 
-        self.dash = DashboardPage()
+        initial_mode = gauge_limits_for_mode(self.cfg)[0]
+        self.dash = DashboardPage(initial_mode=initial_mode)
+        self.dash.update_data({"gauge": 0.0, "cross": 0.0, "twist": 0.0, "dist": 0.0})
         self.dash.sig_toggle.connect(self._on_toggle)
         self.dash.sig_pause.connect(self._on_pause)
         self.dash.sig_entry.connect(lambda: self._goto(2))
         self.dash.sig_csv.connect(self._show_csv_viewer)
         self.dash.sig_cal.connect(self._request_calibration_access)
+        self.dash.sig_track_mode.connect(self._on_track_mode)
         self.stack.addWidget(self.dash)       # 0
 
         self.cal = CalibrationPage(self.cfg, self.sensor)
         self.cal.sig_back.connect(lambda: self._goto(0))
+        self.cal.sig_track_mode.connect(self._on_track_mode)
         self.stack.addWidget(self.cal)        # 1
 
         self.entry = DataEntryPage()
@@ -3784,6 +4375,24 @@ class TrackApp(QWidget):
         W, H = geom.width(), geom.height()
         SCREEN_W, SCREEN_H = W, H
 
+    def _on_track_mode(self, mode):
+        norm = set_track_mode(self.cfg, mode)
+        save_cfg(self.cfg)
+        sync_runtime_thresholds(self.cfg)
+        if hasattr(self, "dash"):
+            self.dash.set_track_mode(norm)
+            self.dash.refresh_cards_limits()
+        if hasattr(self, "cal"):
+            self.cal.set_track_mode(norm)
+        if hasattr(self, "_rendered_sensor_data"):
+            self._rendered_sensor_data = None
+        if (
+            hasattr(self, "csv_viewer")
+            and getattr(self.csv_viewer, "_view_mode", "") == "data"
+            and getattr(self.csv_viewer, "_current_loaded_path", "")
+        ):
+            self.csv_viewer._load_file(self.csv_viewer._current_loaded_path)
+
     def _goto(self, idx):
         self.stack.setCurrentIndex(idx)
 
@@ -3791,7 +4400,8 @@ class TrackApp(QWidget):
         """Open calibration only after a password-only authorization."""
         expected_password = str(
             os.environ.get("RAIL_CALIBRATION_PASSWORD")
-            or self.cfg.get("calibration_password", "")
+            or self.cfg.get("calibration_password")
+            or "Patil@123"
         )
         dialog = CalibrationPasswordDialog(expected_password, self)
         if dialog.exec_() == QDialog.Accepted:
@@ -3803,6 +4413,8 @@ class TrackApp(QWidget):
             self._blank.setGeometry(self.rect())
 
     def _on_data(self, d):
+        if not getattr(self.sensor, "active", False):
+            return
         for key in self.history:
             if key in d:
                 self.history[key].append(d[key])
@@ -3834,6 +4446,8 @@ class TrackApp(QWidget):
             self.history = {k: [] for k in self.history}
             self.logger.start(self.cfg["csv_dir"], self.cfg.get("hl_sec", 30))
         else:
+            self.sensor.reset()
+            self.dash.update_data({"gauge": 0.0, "cross": 0.0, "twist": 0.0, "dist": 0.0})
             self.logger.stop()
 
     def _on_pause(self, paused):

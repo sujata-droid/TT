@@ -7,13 +7,17 @@ SENSOR_LOG="$LOG_DIR/sensor_service.log"
 DIAG_JSON="$LOG_DIR/backend_diag.json"
 LTE_LOG="$LOG_DIR/lte_setup.log"
 MODE="${1:-all}"
-export RAIL_CLOUD_URL="${RAIL_CLOUD_URL:-https://lwtmt-cloud-backend.onrender.com/api/survey}"
+export RAIL_CLOUD_URL="${RAIL_CLOUD_URL:-http://20.8.1.15:5173/api/survey}"
+export RAIL_CALIBRATION_PASSWORD="${RAIL_CALIBRATION_PASSWORD:-Patil@123}"
 export RAIL_SCL_AXIS="${RAIL_SCL_AXIS:-X}"
 export RAIL_ENCODER_PPR="${RAIL_ENCODER_PPR:-400}"
 export RAIL_WHEEL_DIAMETER_MM="${RAIL_WHEEL_DIAMETER_MM:-50}"
 export RAIL_ENCODER_INVERT="${RAIL_ENCODER_INVERT:-0}"
 export RAIL_SAMPLING_DISTANCE_M="${RAIL_SAMPLING_DISTANCE_M:-0.25}"
 export RAIL_TWIST_BASE_M="${RAIL_TWIST_BASE_M:-3.0}"
+export RAIL_ENCODER_DECODE="${RAIL_ENCODER_DECODE:-2.0}"
+export RAIL_ENCODER_FACTOR="${RAIL_ENCODER_FACTOR:-1.123596}"
+export RAIL_ENCODER_FORWARD_ONLY="${RAIL_ENCODER_FORWARD_ONLY:-1}"
 if [ -z "${RAIL_GPS_DEVICE:-}" ]; then
     if [ -e /dev/ttyO4 ]; then
         RAIL_GPS_DEVICE=/dev/ttyO4
@@ -36,12 +40,19 @@ export RAIL_LASER_MIN_MM="${RAIL_LASER_MIN_MM:-160.0}"
 export RAIL_LASER_MAX_MM="${RAIL_LASER_MAX_MM:-0.0}"
 export RAIL_LASER_ZERO_MM="${RAIL_LASER_ZERO_MM:-80.0}"
 export RAIL_LASER_GAUGE_CENTER_MM="${RAIL_LASER_GAUGE_CENTER_MM:-200.0}"
-export RAIL_LASER_DISPLAY_MIN_MM="120.0"
-export RAIL_LASER_DISPLAY_MAX_MM="280.0"
-export RAIL_LASER_DISPLAY_OFFSET_MM="120.0"
-export RAIL_LASER_RAW_AT_PLUS80="2957.5"
-export RAIL_LASER_RAW_AT_ZERO="1365.0"
-export RAIL_LASER_RAW_AT_MINUS80="0.0"
+export RAIL_LASER_DISPLAY_MIN_MM="87.4"
+export RAIL_LASER_DISPLAY_MID_MM="162.4"
+export RAIL_LASER_DISPLAY_MAX_MM="237.4"
+export RAIL_LASER_DISPLAY_OFFSET_MM="87.4"
+# MIN (87.4 mm), MID (162.4 mm), and MAX (237.4 mm) reference points
+export RAIL_LASER_RAW_AT_MIN="${RAIL_LASER_RAW_AT_MIN:-3936}"
+export RAIL_LASER_RAW_AT_MID="${RAIL_LASER_RAW_AT_MID:-0}"
+export RAIL_LASER_RAW_AT_MAX="${RAIL_LASER_RAW_AT_MAX:-15}"
+export RAIL_LASER_RAW_AT_PLUS40="3936"
+export RAIL_LASER_RAW_AT_ZERO="1970"
+export RAIL_LASER_RAW_AT_MINUS40="15"
+export RAIL_LASER_RAW_AT_PLUS80="3936"
+export RAIL_LASER_RAW_AT_MINUS80="15"
 export RAIL_LASER_ZERO_RAW="${RAIL_LASER_ZERO_RAW:--1}"
 export RAIL_LASER_MPC="${RAIL_LASER_MPC:--0.039072}"
 export RAIL_LASER_AUTO_ZERO="0"
@@ -62,6 +73,7 @@ cleanup() {
         $SUDO kill "$SENSOR_PID" 2>/dev/null || true
         wait "$SENSOR_PID" 2>/dev/null || true
     fi
+    pkill -f 'tools/daly_bms.py' 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -80,13 +92,33 @@ make -C "$ROOT_DIR/sensor_board" >/dev/null
 echo "ok"
 echo
 
-echo "[2/8] Preparing PRU encoder"
-$SUDO bash "$ROOT_DIR/setup_encoder_pru.sh"
+echo "[2/8] Preparing encoder (PRU1 hardware / GPIO fallback)"
+if command -v config-pin >/dev/null 2>&1; then
+    $SUDO config-pin P8_15 gpio 2>/dev/null || $SUDO config-pin P8_15 default 2>/dev/null || true
+    $SUDO config-pin P8_12 gpio 2>/dev/null || $SUDO config-pin P8_12 default 2>/dev/null || true
+fi
+if [ -f "$ROOT_DIR/setup_encoder_pru.sh" ] && command -v clpru >/dev/null 2>&1; then
+    $SUDO bash "$ROOT_DIR/setup_encoder_pru.sh" || echo "PRU1 init skipped; using robust GPIO fallback"
+fi
+PRU1_ACTIVE=0
+for d in /sys/class/remoteproc/remoteproc*; do
+    if grep -q "4a338000.pru" "$d/name" 2>/dev/null && [ "$(cat "$d/state" 2>/dev/null)" = "running" ]; then
+        PRU1_ACTIVE=1
+        break
+    fi
+done
+if [ "$PRU1_ACTIVE" -eq 1 ]; then
+    export RAIL_ENCODER_DECODE="4.0"
+    echo "Encoder mode: PRU1 Hardware Quadrature (4X decode, P8_15/P8_12)"
+else
+    export RAIL_ENCODER_DECODE="2.0"
+    echo "Encoder mode: Linux GPIO Fallback (2X decode, P8_15/P8_12)"
+fi
 echo
 
 echo "[3/8] Starting sensor backend"
 $SUDO pkill -x sensor_service 2>/dev/null || true
-    $SUDO bash -c "cd '$ROOT_DIR' && env RAIL_SCL_AXIS='$RAIL_SCL_AXIS' RAIL_ENCODER_PPR='$RAIL_ENCODER_PPR' RAIL_WHEEL_DIAMETER_MM='$RAIL_WHEEL_DIAMETER_MM' RAIL_ENCODER_INVERT='$RAIL_ENCODER_INVERT' RAIL_SAMPLING_DISTANCE_M='$RAIL_SAMPLING_DISTANCE_M' RAIL_TWIST_BASE_M='$RAIL_TWIST_BASE_M' RAIL_GAUGE_SOURCE='$RAIL_GAUGE_SOURCE' RAIL_GAUGE_OUTPUT_MODE='$RAIL_GAUGE_OUTPUT_MODE' RAIL_ADC_PATH='$RAIL_ADC_PATH' RAIL_LASER_CAL_FILE='$RAIL_LASER_CAL_FILE' RAIL_ADC_MAX_RAW='$RAIL_ADC_MAX_RAW' RAIL_LASER_MIN_MM='$RAIL_LASER_MIN_MM' RAIL_LASER_MAX_MM='$RAIL_LASER_MAX_MM' RAIL_LASER_ZERO_MM='$RAIL_LASER_ZERO_MM' RAIL_LASER_GAUGE_CENTER_MM='$RAIL_LASER_GAUGE_CENTER_MM' RAIL_LASER_DISPLAY_MIN_MM='$RAIL_LASER_DISPLAY_MIN_MM' RAIL_LASER_DISPLAY_MAX_MM='$RAIL_LASER_DISPLAY_MAX_MM' RAIL_LASER_DISPLAY_OFFSET_MM='$RAIL_LASER_DISPLAY_OFFSET_MM' RAIL_LASER_RAW_AT_PLUS80='$RAIL_LASER_RAW_AT_PLUS80' RAIL_LASER_RAW_AT_ZERO='$RAIL_LASER_RAW_AT_ZERO' RAIL_LASER_RAW_AT_MINUS80='$RAIL_LASER_RAW_AT_MINUS80' RAIL_LASER_ZERO_RAW='$RAIL_LASER_ZERO_RAW' RAIL_LASER_MPC='$RAIL_LASER_MPC' RAIL_LASER_AUTO_ZERO='$RAIL_LASER_AUTO_ZERO' RAIL_LASER_SIGN='$RAIL_LASER_SIGN' RAIL_GAUGE_FACTOR='$RAIL_GAUGE_FACTOR' ./sensor_board/sensor_service >'$SENSOR_LOG' 2>&1" &
+    $SUDO bash -c "cd '$ROOT_DIR' && env RAIL_SCL_AXIS='$RAIL_SCL_AXIS' RAIL_ENCODER_PPR='$RAIL_ENCODER_PPR' RAIL_WHEEL_DIAMETER_MM='$RAIL_WHEEL_DIAMETER_MM' RAIL_ENCODER_INVERT='$RAIL_ENCODER_INVERT' RAIL_SAMPLING_DISTANCE_M='$RAIL_SAMPLING_DISTANCE_M' RAIL_TWIST_BASE_M='$RAIL_TWIST_BASE_M' RAIL_GAUGE_SOURCE='$RAIL_GAUGE_SOURCE' RAIL_GAUGE_OUTPUT_MODE='$RAIL_GAUGE_OUTPUT_MODE' RAIL_ADC_PATH='$RAIL_ADC_PATH' RAIL_LASER_CAL_FILE='$RAIL_LASER_CAL_FILE' RAIL_ADC_MAX_RAW='$RAIL_ADC_MAX_RAW' RAIL_LASER_MIN_MM='$RAIL_LASER_MIN_MM' RAIL_LASER_MAX_MM='$RAIL_LASER_MAX_MM' RAIL_LASER_ZERO_MM='$RAIL_LASER_ZERO_MM' RAIL_LASER_GAUGE_CENTER_MM='$RAIL_LASER_GAUGE_CENTER_MM' RAIL_LASER_DISPLAY_MIN_MM='$RAIL_LASER_DISPLAY_MIN_MM' RAIL_LASER_DISPLAY_MID_MM='$RAIL_LASER_DISPLAY_MID_MM' RAIL_LASER_DISPLAY_MAX_MM='$RAIL_LASER_DISPLAY_MAX_MM' RAIL_LASER_DISPLAY_OFFSET_MM='$RAIL_LASER_DISPLAY_OFFSET_MM' RAIL_LASER_RAW_AT_MIN='$RAIL_LASER_RAW_AT_MIN' RAIL_LASER_RAW_AT_MID='$RAIL_LASER_RAW_AT_MID' RAIL_LASER_RAW_AT_MAX='$RAIL_LASER_RAW_AT_MAX' RAIL_LASER_RAW_AT_PLUS40='$RAIL_LASER_RAW_AT_PLUS40' RAIL_LASER_RAW_AT_MINUS40='$RAIL_LASER_RAW_AT_MINUS40' RAIL_LASER_RAW_AT_PLUS80='$RAIL_LASER_RAW_AT_PLUS80' RAIL_LASER_RAW_AT_ZERO='$RAIL_LASER_RAW_AT_ZERO' RAIL_LASER_RAW_AT_MINUS80='$RAIL_LASER_RAW_AT_MINUS80' RAIL_LASER_ZERO_RAW='$RAIL_LASER_ZERO_RAW' RAIL_LASER_MPC='$RAIL_LASER_MPC' RAIL_LASER_AUTO_ZERO='$RAIL_LASER_AUTO_ZERO' RAIL_LASER_SIGN='$RAIL_LASER_SIGN' RAIL_GAUGE_FACTOR='$RAIL_GAUGE_FACTOR' RAIL_ENCODER_FACTOR='$RAIL_ENCODER_FACTOR' RAIL_ENCODER_FORWARD_ONLY='$RAIL_ENCODER_FORWARD_ONLY' ./sensor_board/sensor_service >'$SENSOR_LOG' 2>&1" &
 SENSOR_PID=$!
 sleep 2
 if ! $SUDO kill -0 "$SENSOR_PID" 2>/dev/null; then
@@ -126,6 +158,11 @@ fi
 echo
 
 echo "[5/8] Bringing up LTE modem"
+# PCB connects LTE Modem to UART1 (P9_24=TXD, P9_26=RXD)
+if command -v config-pin >/dev/null 2>&1; then
+    $SUDO config-pin P9_24 uart || true
+    $SUDO config-pin P9_26 uart || true
+fi
 if $SUDO env APN="${RAIL_LTE_APN:-airtelgprs.com}" sh "$ROOT_DIR/tools/configure_airtel_lte.sh" >"$LTE_LOG" 2>&1; then
     echo "LTE ready (details: $LTE_LOG)"
 else
@@ -147,7 +184,12 @@ if [ "$MODE" = "diag-only" ]; then
     exit 0
 fi
 
-echo "[6/8] Backend ready"
+echo "[6/8] Starting Daly BMS battery monitor"
+pkill -f 'tools/daly_bms.py' 2>/dev/null || true
+if [ -f "$ROOT_DIR/tools/daly_bms.py" ]; then
+    python3 "$ROOT_DIR/tools/daly_bms.py" --daemon >"$LOG_DIR/daly_bms.log" 2>&1 &
+    echo "Daly BMS monitor started in background"
+fi
 echo
 
 echo "[7/8] Recent backend log"

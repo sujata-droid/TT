@@ -13,7 +13,7 @@ import paramiko
 
 HOST = os.environ.get("BBB_HOST", "192.168.7.2")
 USER = os.environ.get("BBB_USER", "debian")
-PASSWORD = os.environ.get("BBB_PASSWORD")
+PASSWORD = os.environ.get("BBB_PASSWORD", "temppwd")
 REMOTE_ROOT = os.environ.get(
     "BBB_REMOTE_ROOT", "/home/debian/trolley"
 )
@@ -23,12 +23,16 @@ DEPLOY_ITEMS = [
     "configure_autologin_startx.sh",
     "push_latest_csv.sh",
     "railgui25.py",
+    "rail_config.json",
     "run_encoder_console.sh",
+    "run_gauge_console.sh",
     "run_railgui25.sh",
     "run_railgui25_diag.sh",
+    "setup_encoder_gpio.sh",
     "setup_encoder_eqep.sh",
     "setup_encoder_pru.sh",
     "start_gui_session.sh",
+    "laser_cal.json",
     "bbb_runtime",
     "pru",
     "sensor_board",
@@ -171,7 +175,10 @@ def deploy(args):
     client = connect()
     run(client, f"rm -rf {shell_quote(REMOTE_STAGE)} && mkdir -p {shell_quote(REMOTE_STAGE)}", timeout=30)
     upload_project(client, Path(__file__).resolve().parents[1], REMOTE_STAGE)
-    sudo_run(client, "pkill -x sensor_service || true; pkill -f '[p]ython3 .*main.py' || true; pkill -f '[p]ython3 .*main_ui.py' || true", timeout=30)
+    sudo_run(client, "systemctl stop getty@tty1 || true; pkill -9 -x sensor_service || true; pkill -9 -f '[p]ython3 .*daly_bms' || true; pkill -9 -f '[p]ython3 .*main.py' || true; pkill -9 -f '[p]ython3 .*main_ui.py' || true; pkill -9 -f 'launch_railgui25_backend' || true; pkill -9 -f 'railgui25' || true", timeout=30)
+    from datetime import datetime
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sudo_run(client, f"date -s '{now_str}'", timeout=10)
     sudo_run(client, f"rm -rf {shell_quote(REMOTE_ROOT)}", timeout=30)
     sudo_run(client, f"mkdir -p {shell_quote(posixpath.dirname(REMOTE_ROOT))}", timeout=30)
     sudo_run(client, f"cp -a {shell_quote(REMOTE_STAGE)} {shell_quote(REMOTE_ROOT)}", timeout=60)
@@ -181,22 +188,29 @@ def deploy(args):
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/run_railgui25.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/run_railgui25_diag.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/run_encoder_console.sh')}", timeout=30)
+    run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/run_gauge_console.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/push_latest_csv.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/bbb_runtime/run_railgui25_backend.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/configure_autologin_startx.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/start_gui_session.sh')}", timeout=30)
+    run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/setup_encoder_gpio.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/setup_encoder_eqep.sh')}", timeout=30)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/setup_encoder_pru.sh')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/bbb_runtime/backend_bridge.py')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/bbb_runtime/launch_railgui25_backend.py')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/railgui25.py')}", timeout=30)
+    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/encoder_gpio_console_test.py')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/encoder_console_test.py')}", timeout=30)
+    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/daly_bms.py')}", timeout=30)
+    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/track_gauge_console.py')}", timeout=30)
+    run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/export_surveys_to_usb.py')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/encoder_eqep_console_test.py')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/sensors/laser_gauge_adc_test.py')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/sensors/inclinometer_monitor.py')}", timeout=30)
     run(client, f"python3 -m py_compile {shell_quote(REMOTE_ROOT + '/tools/sensors/scl3300_axes_test.py')}", timeout=30)
-    run(client, f"cd {shell_quote(REMOTE_ROOT + '/sensor_board')} && make clean && make", timeout=120)
-    run(client, f"find {shell_quote(REMOTE_ROOT)} -type d -name __pycache__ -prune -exec rm -rf {{}} +", timeout=60)
+    run(client, f"cd {shell_quote(REMOTE_ROOT + '/sensor_board')} && make clean && make && (which clpru >/dev/null 2>&1 && make pru1 || true)", timeout=120)
+    sudo_run(client, f"find {shell_quote(REMOTE_ROOT)} -type d -name __pycache__ -prune -exec rm -rf {{}} +", timeout=60)
+    sudo_run(client, "systemctl start getty@tty1 || true", timeout=10)
     client.close()
 
 
@@ -330,8 +344,9 @@ def install_usb_export(args):
 
 def remote_cmd(args):
     client = connect()
-    code = sudo_run(client, args.command, timeout=args.timeout) if args.sudo else run(
-        client, args.command, timeout=args.timeout
+    command = " ".join(args.command) if isinstance(args.command, list) else str(args.command)
+    code = sudo_run(client, command, timeout=args.timeout) if args.sudo else run(
+        client, command, timeout=args.timeout
     )
     client.close()
     raise SystemExit(code if code >= 0 else 1)
@@ -359,7 +374,7 @@ def main():
     remote = sub.add_parser("remote")
     remote.add_argument("--sudo", action="store_true")
     remote.add_argument("--timeout", type=int, default=120)
-    remote.add_argument("command")
+    remote.add_argument("command", nargs=argparse.REMAINDER)
     remote.set_defaults(func=remote_cmd)
     args = parser.parse_args()
     args.func(args)

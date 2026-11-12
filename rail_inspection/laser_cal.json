@@ -1,0 +1,20 @@
+{
+  "cal_factor": 1.0,
+  "calibration_type": "default_120_to_280",
+  "min_mm": 120.0,
+  "max_mm": 280.0,
+  "span_mm": 160.0,
+  "mm_per_count": 0.03907204,
+  "track_gauge_offset_mm": 1523.5,
+  "cal_reference_point": "max",
+  "cal_max_mm": 237.4,
+  "raw_at_max": 782.0,
+  "captures": {
+    "max": {
+      "measured_mean_raw": 782.0,
+      "sample_count": 50,
+      "sample_min_raw": 778,
+      "sample_max_raw": 790
+    }
+  }
+}

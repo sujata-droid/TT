@@ -59,13 +59,13 @@
  *
  * SPI WIRING TO BBB
  * -----------------
- *   SCL3300 CSB  -> P9_17  (SPI0_CS0)
- *   SCL3300 MISO -> P9_21  (SPI0_D0)
- *   SCL3300 MOSI -> P9_18  (SPI0_D1)
- *   SCL3300 SCK  -> P9_22  (SPI0_CLK)
+ *   SCL3300 CSB  -> P9_28  (SPI1_CS0)
+ *   SCL3300 MISO -> P9_29  (SPI1_D0)
+ *   SCL3300 MOSI -> P9_30  (SPI1_D1)
+ *   SCL3300 SCK  -> P9_31  (SPI1_CLK)
  *   SCL3300 AVDD/DVDD -> 3.3 V
  *   SCL3300 AVSS/DVSS -> GND
- *   Linux device: /dev/spidev0.0
+ *   Linux device: /dev/spidev1.0
  */
 
 #ifndef SCL3300_H_
@@ -75,7 +75,8 @@
 #include <stdbool.h>
 
 /* SPI device */
-#define SCL3300_SPI_DEV      "/dev/spidev0.0"
+#define SCL3300_SPI_DEV_DEFAULT "/dev/spidev1.0"
+#define SCL3300_SPI_DEV         SCL3300_SPI_DEV_DEFAULT
 #define SCL3300_SPI_SPEED_HZ   500000   /* 500 kHz: conservative for marginal wiring */
 #define SCL3300_SPI_MODE      0
 #define SCL3300_SPI_BITS      8
@@ -91,10 +92,10 @@
 #define CMD_READ_ERR_FLAG2  0x200000C1UL
 #define CMD_READ_CMD        0x340000DFUL
 #define CMD_READ_WHOAMI     0x40000091UL
-#define CMD_CHANGE_MODE1    0xB4000091UL  /* Mode 1: +/-3g, 40 Hz, normal */
-#define CMD_CHANGE_MODE2    0xB4000102UL  /* Mode 2: +/-6g, 70 Hz         */
-#define CMD_CHANGE_MODE3    0xB4000213UL  /* Mode 3: +/-1.5g, 10 Hz       */
-#define CMD_CHANGE_MODE4    0xB4000319UL  /* Mode 4: +/-0.5g, 10 Hz       */
+#define CMD_CHANGE_MODE1    0xB400001FUL  /* Mode 1: +/-1.2g, 40 Hz, normal */
+#define CMD_CHANGE_MODE2    0xB4000102UL  /* Mode 2: +/-2.4g, 70 Hz         */
+#define CMD_CHANGE_MODE3    0xB4000225UL  /* Mode 3: +/-1.2g, 10 Hz         */
+#define CMD_CHANGE_MODE4    0xB4000338UL  /* Mode 4: +/-2.4g, 10 Hz (Inclino) */
 #define CMD_SW_RESET        0xB4002098UL
 #define CMD_DUMMY           0x000000FFUL  /* NOP / pipeline flush         */
 
@@ -117,7 +118,9 @@
 /* Timing (ms / us) */
 #define SCL3300_STARTUP_MS    100
 #define SCL3300_MODE_DELAY_MS 100
-#define SCL3300_RESET_DELAY_MS 2
+/* The installed SCL3300 reliably completes a software reset after 100 ms.
+ * Keep this aligned with tools/sensors/scl3300_axes_test.py. */
+#define SCL3300_RESET_DELAY_MS 100
 #define SCL3300_CS_HIGH_US    20
 
 /* Fault threshold */

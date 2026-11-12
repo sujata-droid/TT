@@ -1,12 +1,18 @@
 import csv
 import os
+import re
+import struct
 import tempfile
 import threading
+import zipfile
+import zlib
 from io import BytesIO
 from datetime import date as date_cls
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List, Mapping
+
+DEFAULT_ZIP_PASSWORD = os.environ.get("RAIL_EXPORT_PASSWORD", "Patil123")
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template_string, request, url_for
 import psycopg2
@@ -351,6 +357,7 @@ BASE_CSS = """
     color: var(--text);
   }
   tr:nth-child(even) td { background: #0f1326; }
+  td.alarm { background: #3b1219 !important; color: #ff6b78; font-weight: bold; }
   .muted { color: var(--muted); font-style: italic; }
   .filename { color: #ffffff; }
   .num { text-align: right; }
@@ -526,16 +533,156 @@ def _selected_sessions_from_request() -> List[dict]:
     return _filter_sessions(_all_session_info(), time_range or "all", station)
 
 
+_XML_INVALID_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+
+
+NOMINAL_GAUGE_MM = 1676.0
+CROSSLEVEL_LIMIT_MM = 200.0
+TRACK_GAUGE_MODES = {
+    "straight": {
+        "label": "Straight (-6 to +6 mm: 1670-1682 mm)",
+        "min_tol": -6.0,
+        "max_tol": 6.0,
+    },
+    "curve_ge_440": {
+        "label": "Curve >=440m (-6 to +15 mm: 1670-1691 mm)",
+        "min_tol": -6.0,
+        "max_tol": 15.0,
+    },
+    "curve_lt_440": {
+        "label": "Curve <440m (+20 mm: 1670-1696 mm)",
+        "min_tol": -6.0,
+        "max_tol": 20.0,
+    },
+}
+
+
+def _normalize_track_mode(mode: object) -> str:
+    key = str(mode or "straight").strip().lower()
+    return key if key in TRACK_GAUGE_MODES else "straight"
+
+
+def _is_cell_out_of_limit(header_name: str, value: object, track_mode: str = "straight") -> bool:
+    """Highlight out-of-limit Track Gauge and Crosslevel (+/- 200 mm); keep Distance/Twist white."""
+    if value is None:
+        return False
+    val_str = str(value).strip()
+    if not val_str:
+        return False
+    try:
+        num = float(val_str)
+    except (TypeError, ValueError):
+        return False
+
+    norm = re.sub(r"[^a-z]", "", str(header_name).lower())
+    if norm in ("gauge", "trackgauge", "trackgaugemm", "gaugemm"):
+        spec = TRACK_GAUGE_MODES[_normalize_track_mode(track_mode)]
+        min_tol = float(spec["min_tol"])
+        max_tol = float(spec["max_tol"])
+        if abs(num) > 1000.0:
+            return num < (NOMINAL_GAUGE_MM + min_tol) or num > (NOMINAL_GAUGE_MM + max_tol)
+        return num < min_tol or num > max_tol
+    if norm in ("crosslevel", "crosslevelmm", "cross", "crossover", "crosslvl", "absolutetilt"):
+        return abs(num) > CROSSLEVEL_LIMIT_MM
+    if norm in ("twist", "twistmmm", "twistmmperm", "cumulativetilt",
+                "distance", "dist", "distm", "chainage"):
+        return False
+    return False
+
+
+def _excel_xml(value: object) -> str:
+    if value is None:
+        return ""
+    cleaned = _XML_INVALID_RE.sub("", str(value))
+    return (cleaned.replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _excel_col(index: int) -> str:
+    result = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
+def _build_styled_xlsx_bytes(headers: List[str], rows: List[Mapping[str, object]], track_mode: str = "straight") -> bytes:
+    header_cells = "".join(
+        f'<c r="{_excel_col(index)}1" s="1" t="inlineStr"><is><t>{_excel_xml(name)}</t></is></c>'
+        for index, name in enumerate(headers, 1))
+    body = [f'<row r="1">{header_cells}</row>']
+    for row_no, row in enumerate(rows, 2):
+        cells = []
+        for index, name in enumerate(headers, 1):
+            value = row.get(name, "")
+            style = ' s="2"' if _is_cell_out_of_limit(name, value, track_mode=track_mode) else ''
+            cells.append(f'<c r="{_excel_col(index)}{row_no}"{style} t="inlineStr"><is><t>{_excel_xml(value)}</t></is></c>')
+        body.append(f'<row r="{row_no}">{"".join(cells)}</row>')
+
+    max_col = _excel_col(max(1, len(headers)))
+    max_row = max(1, len(rows) + 1)
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<dimension ref="A1:{max_col}{max_row}"/>'
+        '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+        f'<sheetData>{"".join(body)}</sheetData></worksheet>'
+    )
+    styles_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<fonts count="3">'
+        '<font><sz val="11"/><name val="Calibri"/></font>'
+        '<font><b/><color rgb="FF000000"/><sz val="11"/><name val="Calibri"/></font>'
+        '<font><b/><color rgb="FFC00000"/><sz val="11"/><name val="Calibri"/></font>'
+        '</fonts>'
+        '<fills count="4">'
+        '<fill><patternFill patternType="none"/></fill>'
+        '<fill><patternFill patternType="gray125"/></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/><bgColor indexed="64"/></patternFill></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFFFC7CE"/><bgColor indexed="64"/></patternFill></fill>'
+        '</fills>'
+        '<borders count="2">'
+        '<border/>'
+        '<border>'
+        '<left style="thin"><color rgb="FFD9D9D9"/></left>'
+        '<right style="thin"><color rgb="FFD9D9D9"/></right>'
+        '<top style="thin"><color rgb="FFD9D9D9"/></top>'
+        '<bottom style="thin"><color rgb="FFD9D9D9"/></bottom>'
+        '</border>'
+        '</borders>'
+        '<cellStyleXfs count="1"><xf/></cellStyleXfs>'
+        '<cellXfs count="3">'
+        '<xf fontId="0" fillId="0" borderId="1" xfId="0"/>'
+        '<xf fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>'
+        '<xf fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>'
+        '</cellXfs>'
+        '</styleSheet>'
+    )
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>')
+        archive.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        archive.writestr("xl/workbook.xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Survey" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        archive.writestr("xl/_rels/workbook.xml.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>')
+        archive.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+        archive.writestr("xl/styles.xml", styles_xml)
+    return buf.getvalue()
+
+
 def _session_api_record(file: Mapping[str, object]) -> dict:
     filename = str(file["name"])
+    track_mode = _normalize_track_mode(request.args.get("mode", "straight"))
     return {
         "S.NO": file["serial_no"],
         "Date and Time": file["date_time"],
         "Station No": file["station"],
         "Type": file["type"],
-        "View CSV": url_for("view_survey", filename=filename, _external=True),
+        "View CSV": url_for("view_survey", filename=filename, mode=track_mode, _external=True),
         "Export": {
-            "excel": url_for("download_csv", filename=filename, _external=True),
+            "csv": url_for("download_csv", filename=filename, _external=True),
+            "excel": url_for("download_excel", filename=filename, mode=track_mode, _external=True),
+            "zip": url_for("download_zip", filename=filename, mode=track_mode, _external=True),
             "pdf": url_for("download_pdf", filename=filename, _external=True),
         },
         "serial_no": file["serial_no"],
@@ -543,8 +690,11 @@ def _session_api_record(file: Mapping[str, object]) -> dict:
         "type": file["type"],
         "station_no": file["station"],
         "filename": filename,
-        "view_csv_url": url_for("view_survey", filename=filename, _external=True),
-        "download_excel_url": url_for("download_csv", filename=filename, _external=True),
+        "track_mode": track_mode,
+        "view_csv_url": url_for("view_survey", filename=filename, mode=track_mode, _external=True),
+        "download_csv_url": url_for("download_csv", filename=filename, _external=True),
+        "download_excel_url": url_for("download_excel", filename=filename, mode=track_mode, _external=True),
+        "download_zip_url": url_for("download_zip", filename=filename, mode=track_mode, _external=True),
         "download_pdf_url": url_for("download_pdf", filename=filename, _external=True),
     }
 
@@ -604,6 +754,7 @@ def index():
     if time_range not in {"all", "today"}:
         time_range = "all"
     station = request.args.get("station", "").strip()
+    track_mode = _normalize_track_mode(request.args.get("mode", "straight"))
     files = _filter_sessions(files, time_range, station)
     return render_template_string(
         BASE_CSS
@@ -615,12 +766,17 @@ def index():
           </div>
           <h2>Stored Surveys</h2>
           <form class="filters" method="get">
-            <a class="{{ 'active' if time_range == 'all' else '' }}" href="{{ url_for('index', station=station) }}">All</a>
-            <a class="{{ 'active' if time_range == 'today' else '' }}" href="{{ url_for('index', range='today', station=station) }}">Today</a>
+            <a class="{{ 'active' if time_range == 'all' else '' }}" href="{{ url_for('index', station=station, mode=track_mode) }}">All</a>
+            <a class="{{ 'active' if time_range == 'today' else '' }}" href="{{ url_for('index', range='today', station=station, mode=track_mode) }}">Today</a>
             <select name="station">
               <option value="">All Station Nos</option>
               {% for option in stations %}
               <option value="{{ option }}" {{ 'selected' if option == station else '' }}>{{ option }}</option>
+              {% endfor %}
+            </select>
+            <select name="mode">
+              {% for mode_key, spec in track_modes.items() %}
+              <option value="{{ mode_key }}" {{ 'selected' if mode_key == track_mode else '' }}>{{ spec.label }}</option>
               {% endfor %}
             </select>
             <input type="hidden" name="range" value="{{ time_range }}">
@@ -647,10 +803,12 @@ def index():
                   <td>{{ file.station }}</td>
                   <td>{{ file.type }}</td>
                   <td>
-                    <a href="{{ url_for('view_survey', filename=file.name) }}" target="_blank" rel="noopener">View</a>
+                    <a href="{{ url_for('view_survey', filename=file.name, mode=track_mode) }}" target="_blank" rel="noopener">View</a>
                   </td>
                   <td>
-                    <a href="{{ url_for('download_csv', filename=file.name) }}">CSV Excel</a>
+                    <a href="{{ url_for('download_csv', filename=file.name) }}">CSV</a>
+                    <a href="{{ url_for('download_excel', filename=file.name, mode=track_mode) }}">Excel</a>
+                    <a href="{{ url_for('download_zip', filename=file.name, mode=track_mode) }}">ZIP</a>
                     <a href="{{ url_for('download_pdf', filename=file.name) }}">PDF</a>
                   </td>
                 </tr>
@@ -667,6 +825,8 @@ def index():
         stations=stations,
         station=station,
         time_range=time_range,
+        track_mode=track_mode,
+        track_modes=TRACK_GAUGE_MODES,
         storage=str(STORAGE_DIR),
     )
 
@@ -676,6 +836,7 @@ def view_survey(filename: str):
     path = _csv_path(filename)
     if not path.exists():
         abort(404)
+    track_mode = _normalize_track_mode(request.args.get("mode", "straight"))
     rows = _read_csv(path)
     fields = _ordered_fields(rows) if rows else CSV_FIELDS
     return render_template_string(
@@ -684,9 +845,18 @@ def view_survey(filename: str):
         <main>
           <h1>Survey Table</h1>
           <div class="toolbar">
-            <a href="{{ url_for('index') }}">Back</a>
-            <a href="{{ url_for('download_csv', filename=path.name) }}">Download CSV Excel</a>
+            <a href="{{ url_for('index', mode=track_mode) }}">Back</a>
+            <a href="{{ url_for('download_csv', filename=path.name) }}">Download CSV</a>
+            <a href="{{ url_for('download_excel', filename=path.name, mode=track_mode) }}">Download Excel</a>
+            <a href="{{ url_for('download_zip', filename=path.name, mode=track_mode) }}">Download ZIP</a>
             <a href="{{ url_for('download_pdf', filename=path.name) }}">Download PDF</a>
+            <form class="filters" method="get" style="margin-bottom:0;">
+              <select name="mode" onchange="this.form.submit()">
+                {% for mode_key, spec in track_modes.items() %}
+                <option value="{{ mode_key }}" {{ 'selected' if mode_key == track_mode else '' }}>{{ spec.label }}</option>
+                {% endfor %}
+              </select>
+            </form>
             <span class="pill">{{ rows|length }} rows</span>
             <span class="filename">{{ path.name }}</span>
           </div>
@@ -703,7 +873,7 @@ def view_survey(filename: str):
                 {% for row in rows %}
                 <tr>
                   {% for field in fields %}
-                  <td>{{ row.get(field, "") }}</td>
+                  <td class="{{ 'alarm' if is_alarm(field, row.get(field, ''), track_mode) else '' }}">{{ row.get(field, "") }}</td>
                   {% endfor %}
                 </tr>
                 {% endfor %}
@@ -715,6 +885,109 @@ def view_survey(filename: str):
         path=path,
         rows=rows,
         fields=fields,
+        track_mode=track_mode,
+        track_modes=TRACK_GAUGE_MODES,
+        is_alarm=_is_cell_out_of_limit,
+    )
+
+
+@app.get("/excel/<path:filename>")
+def download_excel(filename: str):
+    path = _csv_path(filename)
+    if not path.exists():
+        abort(404)
+    track_mode = _normalize_track_mode(request.args.get("mode", "straight"))
+    rows = _read_csv(path)
+    fields = _ordered_fields(rows) if rows else CSV_FIELDS
+    xlsx_bytes = _build_styled_xlsx_bytes(fields, rows, track_mode=track_mode)
+    return Response(
+        xlsx_bytes,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={path.stem}.xlsx"},
+    )
+
+
+_CRC32_TABLE = []
+for _i in range(256):
+    _c = _i
+    for _ in range(8):
+        _c = (_c >> 1) ^ 0xEDB88320 if (_c & 1) else (_c >> 1)
+    _CRC32_TABLE.append(_c)
+
+
+def _zipcrypto_encrypt(raw_comp_bytes: bytes, crc32_val: int, password: str) -> bytes:
+    """Encrypt compressed/stored entry bytes with PKZIP 2.0 ZipCrypto stream cipher."""
+    table = _CRC32_TABLE
+    k0, k1, k2 = 0x12345678, 0x23456789, 0x34567890
+    for b in str(password).encode("utf-8"):
+        k0 = ((k0 >> 8) ^ table[(k0 ^ b) & 0xFF]) & 0xFFFFFFFF
+        k1 = (((k1 + (k0 & 0xFF)) & 0xFFFFFFFF) * 134775813 + 1) & 0xFFFFFFFF
+        k2 = ((k2 >> 8) ^ table[(k2 ^ ((k1 >> 24) & 0xFF)) & 0xFF]) & 0xFFFFFFFF
+
+    header = os.urandom(11) + bytes([(crc32_val >> 24) & 0xFF])
+    out = bytearray(12 + len(raw_comp_bytes))
+    pos = 0
+    for chunk in (header, raw_comp_bytes):
+        for p in chunk:
+            temp = (k2 | 2) & 0xFFFF
+            out[pos] = p ^ (((temp * (temp ^ 1)) >> 8) & 0xFF)
+            pos += 1
+            k0 = ((k0 >> 8) ^ table[(k0 ^ p) & 0xFF]) & 0xFFFFFFFF
+            k1 = (((k1 + (k0 & 0xFF)) & 0xFFFFFFFF) * 134775813 + 1) & 0xFFFFFFFF
+            k2 = ((k2 >> 8) ^ table[(k2 ^ ((k1 >> 24) & 0xFF)) & 0xFF]) & 0xFFFFFFFF
+    return bytes(out)
+
+
+def _build_encrypted_zip_bytes(entries: List[tuple], password: str) -> bytes:
+    """Build a standard ZipCrypto password-protected archive from (filename, bytes) entries."""
+    dt = datetime.now()
+    dos_time = ((dt.hour & 0x1F) << 11) | ((dt.minute & 0x3F) << 5) | ((dt.second // 2) & 0x1F)
+    dos_date = (((max(1980, dt.year) - 1980) & 0x7F) << 9) | ((dt.month & 0x0F) << 5) | (dt.day & 0x1F)
+    flag = 0x0001 | 0x0800
+    file_blobs = bytearray()
+    central_records = []
+    for arcname, raw_bytes in entries:
+        name_bytes = str(arcname).encode("utf-8")
+        crc = zlib.crc32(raw_bytes) & 0xFFFFFFFF
+        comp_obj = zlib.compressobj(6, zlib.DEFLATED, -15)
+        deflated = comp_obj.compress(raw_bytes) + comp_obj.flush()
+        method, payload = (8, deflated) if len(deflated) < len(raw_bytes) else (0, raw_bytes)
+        enc = _zipcrypto_encrypt(payload, crc, password)
+        lfh_offset = len(file_blobs)
+        file_blobs.extend(struct.pack(
+            "<IHHHHHIIIHH", 0x04034B50, 20, flag, method, dos_time, dos_date,
+            crc, len(enc), len(raw_bytes), len(name_bytes), 0,
+        ) + name_bytes)
+        file_blobs.extend(enc)
+        central_records.append(struct.pack(
+            "<IHHHHHHIIIHHHHHII", 0x02014B50, 20, 20, flag, method, dos_time, dos_date,
+            crc, len(enc), len(raw_bytes), len(name_bytes), 0, 0, 0, 0, 0x20, lfh_offset,
+        ) + name_bytes)
+    cd_data = b"".join(central_records)
+    eocd = struct.pack(
+        "<IHHHHIIH", 0x06054B50, 0, 0, len(entries), len(entries), len(cd_data), len(file_blobs), 0,
+    )
+    return bytes(file_blobs) + cd_data + eocd
+
+
+@app.get("/zip/<path:filename>")
+def download_zip(filename: str):
+    path = _csv_path(filename)
+    if not path.exists():
+        abort(404)
+    track_mode = _normalize_track_mode(request.args.get("mode", "straight"))
+    rows = _read_csv(path)
+    fields = _ordered_fields(rows) if rows else CSV_FIELDS
+    xlsx_bytes = _build_styled_xlsx_bytes(fields, rows, track_mode=track_mode)
+    csv_bytes = path.read_bytes()
+    zip_bytes = _build_encrypted_zip_bytes(
+        [(f"{path.stem}.csv", csv_bytes), (f"{path.stem}.xlsx", xlsx_bytes)],
+        DEFAULT_ZIP_PASSWORD,
+    )
+    return Response(
+        zip_bytes,
+        mimetype="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={path.stem}.zip"},
     )
 
 
@@ -724,8 +997,8 @@ def download_csv(filename: str):
     if not path.exists():
         abort(404)
     return Response(
-        path.read_text(encoding="utf-8"),
-        mimetype="text/csv",
+        path.read_bytes(),
+        mimetype="text/csv; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename={path.name}"},
     )
 
@@ -790,13 +1063,17 @@ def api_survey_file(filename: str):
     path = _csv_path(filename)
     if not path.exists():
         abort(404)
+    track_mode = _normalize_track_mode(request.args.get("mode", "straight"))
     rows = _read_csv(path)
     return jsonify(
         {
             "ok": True,
             "filename": path.name,
+            "track_mode": track_mode,
             "rows": rows,
-            "download_excel_url": url_for("download_csv", filename=path.name, _external=True),
+            "download_csv_url": url_for("download_csv", filename=path.name, _external=True),
+            "download_excel_url": url_for("download_excel", filename=path.name, mode=track_mode, _external=True),
+            "download_zip_url": url_for("download_zip", filename=path.name, mode=track_mode, _external=True),
             "download_pdf_url": url_for("download_pdf", filename=path.name, _external=True),
         }
     )

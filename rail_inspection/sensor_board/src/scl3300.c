@@ -114,12 +114,22 @@ int scl3300_open(SCL3300 *dev) {
     dev->spi_fd = -1;
     dev->cross_axis_cmd = axis_command_from_env(&dev->cross_axis);
 
-    dev->spi_fd = open(SCL3300_SPI_DEV, O_RDWR);
+    const char *spi_dev = getenv("RAIL_SPI_DEV");
+    if (!spi_dev || !*spi_dev) {
+        const char *bus = getenv("RAIL_SPI_BUS");
+        if (bus && bus[0] == '0') {
+            spi_dev = "/dev/spidev0.0";
+        } else {
+            spi_dev = SCL3300_SPI_DEV_DEFAULT;
+        }
+    }
+
+    dev->spi_fd = open(spi_dev, O_RDWR);
     if (dev->spi_fd < 0) {
         fprintf(stderr,
             "[SCL3300] Cannot open %s: %s\n"
-            "          Check: config-pin P9_17 spi_cs && run as root\n",
-            SCL3300_SPI_DEV, strerror(errno));
+            "          Check SPI pinmux and run as root\n",
+            spi_dev, strerror(errno));
         return -1;
     }
 
@@ -132,7 +142,7 @@ int scl3300_open(SCL3300 *dev) {
         fprintf(stderr, "[SCL3300] SPI config failed: %s\n", strerror(errno));
         goto fail;
     }
-    printf("[SCL3300] %s @ %u Hz mode %u\n", SCL3300_SPI_DEV, speed, mode);
+    printf("[SCL3300] %s @ %u Hz mode %u\n", spi_dev, speed, mode);
 
     uint32_t rx;
     /* Startup sequence per datasheet section 4.2 */

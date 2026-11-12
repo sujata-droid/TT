@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CSV_DIR="${1:-$HOME/surveys}"
-URL="${RAIL_CLOUD_URL:-https://lwtmt-cloud-backend.onrender.com/api/survey}"
+URL="${RAIL_CLOUD_URL:-http://20.8.1.15:5173/api/survey}"
 
 if [[ "$URL" != */api/survey ]]; then
   URL="${URL%/}/api/survey"

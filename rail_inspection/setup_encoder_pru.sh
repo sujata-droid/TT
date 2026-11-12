@@ -14,17 +14,17 @@ if [ ! -x "$CONFIG_PIN" ]; then
     exit 1
 fi
 
-echo "[ENC] Configuring BBB pins for PRU quadrature input"
-"$CONFIG_PIN" P9_27 pruin
-"$CONFIG_PIN" P9_30 pruin
+echo "[ENC] Configuring PCB encoder pins for PRU1 quadrature via GPIO1_DATAIN (P8_15=A, P8_12=B)"
+"$CONFIG_PIN" P8_15 gpio 2>/dev/null || "$CONFIG_PIN" P8_15 default 2>/dev/null || true
+"$CONFIG_PIN" P8_12 gpio 2>/dev/null || "$CONFIG_PIN" P8_12 default 2>/dev/null || true
+"$CONFIG_PIN" -q P8_15 || true
+"$CONFIG_PIN" -q P8_12 || true
 
-echo "[ENC] Building PRU firmware"
-# Files copied to the BBB can retain their original timestamps.  Force this
-# target so the PRU never restarts with an old encoder_pru0.out image.
-make -B -C "$ROOT_DIR/sensor_board" pru
+echo "[ENC] Building PRU1 firmware (P8_15/P8_12)"
+make -C "$ROOT_DIR/sensor_board" pru1
 
-echo "[ENC] Installing PRU firmware"
-cp "$ROOT_DIR/pru/encoder_pru0.out" /lib/firmware/am335x-pru0-fw
+echo "[ENC] Installing PRU1 firmware"
+cp "$ROOT_DIR/pru/encoder_pru1.out" /lib/firmware/am335x-pru1-fw
 
 wait_for_pru_stop() {
     local node="$1"
@@ -43,31 +43,33 @@ wait_for_pru_stop() {
 started=0
 for d in /sys/class/remoteproc/remoteproc*; do
     [ -e "$d/name" ] || continue
-    if grep -q "4a334000.pru" "$d/name" 2>/dev/null; then
+    # PRU1 is at 4a338000.pru
+    if grep -q "4a338000.pru" "$d/name" 2>/dev/null; then
         state="$(cat "$d/state" 2>/dev/null || echo unknown)"
         if [ "$state" = "running" ]; then
             echo stop > "$d/state" 2>/dev/null || true
             wait_for_pru_stop "$d" || true
         fi
-        echo am335x-pru0-fw > "$d/firmware"
+        echo am335x-pru1-fw > "$d/firmware"
         sleep 0.5
         if ! echo start > "$d/state" 2>/dev/null; then
             state="$(cat "$d/state" 2>/dev/null || echo unknown)"
             if [ "$state" != "running" ]; then
-                echo "Could not start PRU0 via $d (state=$state)" >&2
+                echo "Could not start PRU1 via $d (state=$state)" >&2
                 exit 1
             fi
         fi
-        echo "[ENC] PRU0 started via $d"
+        echo "[ENC] PRU1 started via $d"
         started=1
         break
     fi
 done
 
 if [ "$started" -ne 1 ]; then
-    echo "Could not find PRU0 remoteproc node" >&2
+    echo "Could not find PRU1 remoteproc node (4a338000.pru)" >&2
     exit 1
 fi
 
+echo "[ENC] PRU1 hardware quadrature active! P9_30 (SCL3300 SPI1 MOSI) is safe."
 echo "[ENC] Launch test with:"
 echo "sudo python3 $ROOT_DIR/tools/encoder_console_test.py --ppr 400 --wheel-diameter-mm 50"

@@ -20,23 +20,23 @@ SHM_MAGIC = 0x5241494C
 SHM_VERSION = 1
 SHM_STRUCT = __import__("struct").Struct("<IIIIqddddiBBBB")
 
-DISPLAY_DECIMALS = 1
+DISPLAY_DECIMALS = 2
 TWIST_DISPLAY_DECIMALS = 2
 DISPLAY_HZ = 10
-RAW_POLL_HZ = 50
+RAW_POLL_HZ = 50 
 
 WARMUP_SECONDS = 2.0
 DIAG_CAPTURE_SECONDS = 6.0
 ZERO_CAPTURE_SECONDS = 2.0
 
-CROSS_AVG_TAPS = 1
-TWIST_AVG_TAPS = 1
-GAUGE_AVG_TAPS = 5
+CROSS_AVG_TAPS = 15
+TWIST_AVG_TAPS = 5
+GAUGE_AVG_TAPS = 20
 DIST_AVG_TAPS = 1
 
-CROSS_DEADBAND_MM = 0.0
+CROSS_DEADBAND_MM = 0.08
 TWIST_DEADBAND_MM_M = 0.02
-GAUGE_DEADBAND_MM = 0.05
+GAUGE_DEADBAND_MM = 0.20
 DIST_DEADBAND_M = 0.0
 
 ZERO_HOLD_MM = 0.0
@@ -50,9 +50,9 @@ MOTION_DIST_M = 0.05
 GPSD_HOST = os.environ.get("RAIL_GPSD_HOST", "127.0.0.1")
 GPSD_PORT = int(os.environ.get("RAIL_GPSD_PORT", "2947"))
 GPS_STALE_SECONDS = float(os.environ.get("RAIL_GPS_STALE_SECONDS", "30"))
-CAL_MIN_COUNTS = 5000
+CAL_MIN_COUNTS = 500
 CAL_FACTOR_MIN = 0.5
-CAL_FACTOR_MAX = 1.5
+CAL_FACTOR_MAX = 2.5
 INCL_CAL_FACTOR_MIN = 0.1
 INCL_CAL_FACTOR_MAX = 5.0
 INCL_CAL_MIN_REFERENCE_MM = 20.0
@@ -113,6 +113,10 @@ def compute_inclination_factor(raw_mm: float, offset_mm: float, reference_mm: fl
 
 def _rounded(value: float) -> float:
     return round(float(value), DISPLAY_DECIMALS)
+
+
+def _rounded_dist(value: float) -> float:
+    return round(float(value), 2)
 
 
 def _rounded_twist(value: float) -> float:
@@ -271,6 +275,7 @@ class SharedMemoryBridge:
         self._twist_baseline_steps = max(1, int(round(self._twist_baseline_m / self._twist_sample_step_m)))
         self._twist_step_samples: Dict[int, float] = {}
         self._twist_last_step_index: Optional[int] = None
+        self._last_completed_chord: int = 0
 
     def close(self) -> None:
         self._gps.close()
@@ -296,6 +301,7 @@ class SharedMemoryBridge:
         self._dist_hist.clear()
         self._twist_step_samples.clear()
         self._twist_last_step_index = None
+        self._last_completed_chord = 0
         self._display.update({
             "twist": 0.0,
             "dist": 0.0,
@@ -357,12 +363,17 @@ class SharedMemoryBridge:
         cross = (frame.cross_level_mm - float(incl.get("offset", 0.0))) * float(incl.get("factor", 1.0))
         twist = frame.twist_mm_per_m
         gauge = frame.gauge_mm
-        raw_dist = encoder_distance_m(frame.encoder_count, float(enc.get("scale", 1.0)))
+        # Use sensor_service's direct calibrated chainage_m from shared memory,
+        # which accurately accounts for PRU 4X vs GPIO 2X decode.
+        if frame.chainage_m != 0.0 or frame.encoder_count == 0:
+            raw_dist = abs(frame.chainage_m)
+        else:
+            raw_dist = abs(encoder_distance_m(frame.encoder_count, float(enc.get("scale", 1.0)), float(enc.get("factor", 1.0))))
         if self._chainage_offset is None:
             self._chainage_offset = raw_dist
         # Show travelled distance from the session start regardless of
         # encoder direction; previously reverse motion was clipped to 0.0.
-        dist = abs(raw_dist - self._chainage_offset) * float(enc.get("factor", 1.0))
+        dist = abs(raw_dist - self._chainage_offset)
         return {
             "cross": cross,
             "twist": twist,
@@ -432,20 +443,39 @@ class SharedMemoryBridge:
         gauge_avg = _queue_mean(self._gauge_hist)
         dist_avg = _queue_mean(self._dist_hist)
         session_dist = max(0.0, values["dist"])
+        display_dist = _rounded(session_dist)
         step_index = int(round(session_dist / self._twist_sample_step_m)) if self._twist_sample_step_m > 0 else 0
         if self._twist_last_step_index is None or step_index != self._twist_last_step_index:
             self._twist_step_samples[step_index] = cross
             self._twist_last_step_index = step_index
-        twist_raw = self._display.get("raw_twist_mm_m", 0.0)
-        on_twist_point = (
-            step_index > 0
-            and (step_index % self._twist_baseline_steps) == 0
-            and abs(session_dist - (step_index * self._twist_sample_step_m)) <= (self._twist_sample_step_m * 0.51)
-        )
-        if on_twist_point:
-            prev_step = step_index - self._twist_baseline_steps
-            if prev_step in self._twist_step_samples and step_index in self._twist_step_samples:
-                twist_raw = (self._twist_step_samples[step_index] - self._twist_step_samples[prev_step]) / self._twist_baseline_m
+
+        completed_chords = int(display_dist / self._twist_baseline_m) if self._twist_baseline_m > 0 else 0
+        if completed_chords < 1:
+            # Below the 3.0m baseline (e.g. 0.0m to 2.9m); no complete chord yet
+            twist_raw = 0.0
+            self._last_completed_chord = 0
+        else:
+            if completed_chords != self._last_completed_chord:
+                # Newly reached an exact baseline multiple on the display (3.0m, 6.0m, 9.0m...)
+                self._last_completed_chord = completed_chords
+                curr_step = completed_chords * self._twist_baseline_steps
+                prev_step = (completed_chords - 1) * self._twist_baseline_steps
+
+                def _get_step(target):
+                    if target in self._twist_step_samples:
+                        return self._twist_step_samples[target]
+                    for delta in (1, -1, 2, -2):
+                        if (target + delta) in self._twist_step_samples:
+                            return self._twist_step_samples[target + delta]
+                    return cross
+
+                sample_curr = _get_step(curr_step)
+                sample_prev = _get_step(prev_step)
+                twist_raw = (sample_curr - sample_prev) / self._twist_baseline_m
+            else:
+                # Hold current chord's twist until the next 3m multiple is reached
+                twist_raw = self._display.get("raw_twist_mm_m", 0.0)
+
         self._twist_hist.clear()
         self._twist_hist.append(twist_raw)
         twist_avg = _queue_mean(self._twist_hist)
@@ -458,7 +488,7 @@ class SharedMemoryBridge:
         self._display["cross"] = _rounded(_stable_update(self._display["cross"], cross_avg, CROSS_DEADBAND_MM))
         self._display["twist"] = _rounded_twist(_stable_update(self._display["twist"], twist_avg, TWIST_DEADBAND_MM_M))
         self._display["gauge"] = _rounded(_stable_update(self._display["gauge"], gauge_avg, GAUGE_DEADBAND_MM))
-        self._display["dist"] = _rounded(_stable_update(self._display["dist"], dist_avg, DIST_DEADBAND_M))
+        self._display["dist"] = _rounded_dist(_stable_update(self._display["dist"], dist_avg, DIST_DEADBAND_M))
         gps = self._gps.poll()
         self._display["lat"] = gps["lat"]
         self._display["lon"] = gps["lon"]

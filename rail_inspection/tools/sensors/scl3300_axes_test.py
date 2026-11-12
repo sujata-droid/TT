@@ -20,12 +20,11 @@ CMD_READ_ACC_Y = 0x080000FD
 CMD_READ_ACC_Z = 0x0C0000FB
 CMD_READ_STATUS = 0x180000E5
 CMD_READ_WHOAMI = 0x40000091
-CMD_CHANGE_MODE4 = 0xB4000319
+CMD_CHANGE_MODE4 = 0xB4000338
 CMD_SW_RESET = 0xB4002098
 CMD_DUMMY = 0x000000FF
 SENSITIVITY = 12000.0
 GAUGE_MM = 1676.0
-
 
 def word_to_bytes(value: int):
     return [(value >> 24) & 0xFF, (value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF]
@@ -63,10 +62,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="SCL3300 all-axis motion test")
     parser.add_argument("--seconds", type=float, default=30.0)
     parser.add_argument("--interval", type=float, default=0.25)
+    parser.add_argument("--bus", type=int, default=1, choices=[0, 1], help="SPI bus: 0 (/dev/spidev0.0) or 1 (/dev/spidev1.0)")
     args = parser.parse_args()
 
     spi = spidev.SpiDev()
-    spi.open(0, 0)
+    spi.open(args.bus, 0)
     spi.max_speed_hz = 500000
     spi.mode = 0
     try:

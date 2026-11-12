@@ -30,9 +30,9 @@ from backend_bridge import SharedMemoryBridge, compute_inclination_factor, forma
 
 _BASE_LOAD_CFG = gui_app.load_cfg
 
-CSV_FLUSH_ROWS = 50
+CSV_FLUSH_ROWS = 5
 UI_REFRESH_MS = 100
-DEFAULT_CLOUD_ROOT = "https://lwtmt-cloud-backend.onrender.com/api/survey"
+DEFAULT_CLOUD_ROOT = "http://20.8.1.15:5173/api/survey"
 CLOUD_RETRIES = 3
 CLOUD_UPLOAD_TIMEOUT_SECS = 300
 GAUGE_NOMINAL_MM = 1676.0
@@ -42,12 +42,10 @@ LASER_CAL_TOLERANCE_PCT = 15.0
 LASER_CAL_MAX_SPREAD = 200
 LASER_CAL_SAMPLES = 50
 LASER_CAL_SAMPLE_INTERVAL_MS = 200
-LASER_RAW_PLUS80 = 1.35 / 1.8 * LASER_ADC_MAX_RAW
-LASER_RAW_ZERO = LASER_RAW_PLUS80 / 2.0
-LASER_RAW_MINUS80 = 0.0
+LASER_DISPLAY_MIN_MM = 0.0
+LASER_DISPLAY_MAX_MM = 237.4
+LASER_DEFAULT_MPC = 160.0 / 4095.0  # 0.03907204 mm/count (25.59375 counts/mm)
 LASER_ENDPOINT_TOLERANCE_PCT = 1.0
-LASER_DISPLAY_MIN_MM = 120.0
-LASER_DISPLAY_MAX_MM = 280.0
 INCL_CAL_FILE = Path(os.environ.get(
     "RAIL_INCLINOMETER_CAL_FILE", PROJECT_DIR / "inclinometer_cal.json"
 ))
@@ -113,7 +111,22 @@ def _cloud_root(url: str) -> str:
     return api_url
 
 
-CLOUD_URL = _normalize_cloud_url(os.environ.get("RAIL_CLOUD_URL", DEFAULT_CLOUD_ROOT))
+def _get_configured_cloud_url() -> str:
+    env_val = os.environ.get("RAIL_CLOUD_URL", "").strip()
+    if env_val and "onrender.com" not in env_val:
+        return _normalize_cloud_url(env_val)
+    try:
+        config_path = PROJECT_DIR / "rail_config.json"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                if cfg.get("cloud_url") and "onrender.com" not in cfg.get("cloud_url"):
+                    return _normalize_cloud_url(cfg["cloud_url"])
+    except Exception:
+        pass
+    return DEFAULT_CLOUD_ROOT
+
+CLOUD_URL = _get_configured_cloud_url()
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -284,43 +297,107 @@ def _sanitize_css(text: str) -> str:
 
 def _laser_calibration_state():
     if not LASER_CAL_FILE.exists():
-        return {"factor": 1.0, "calibrated": False, "references": None}
+        return {
+            "factor": 1.0,
+            "calibrated": True,
+            "calibration_type": "default_120_to_280",
+            "references": {"min_mm": 120.0, "max_mm": 280.0, "mm_per_count": LASER_DEFAULT_MPC},
+            "min_mm": 120.0,
+            "max_mm": 280.0,
+            "mm_per_count": LASER_DEFAULT_MPC,
+        }
     try:
         data = json.loads(LASER_CAL_FILE.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("calibration data must be a JSON object")
-        reference_keys = ("raw_at_plus80", "raw_at_zero", "raw_at_minus80")
-        has_any_reference = any(key in data for key in reference_keys)
-        if has_any_reference and not all(key in data for key in reference_keys):
-            raise ValueError("three-point calibration is incomplete")
-        if all(key in data for key in reference_keys):
-            references = {key: float(data[key]) for key in reference_keys}
-            if not all(math.isfinite(value) and 0.0 <= value <= LASER_ADC_MAX_RAW
-                       for value in references.values()):
-                raise ValueError("three-point raw references must be finite ADC values")
-            if not references["raw_at_plus80"] > references["raw_at_zero"] > references["raw_at_minus80"]:
-                raise ValueError("three-point raw references must decrease from +80 through -80")
-            return {"factor": 1.0, "calibrated": True, "references": references}
-        factor = float(data.get("cal_factor", data.get("factor")))
+
+        if data.get("calibration_type") in ("default", "default_120_to_280"):
+            mpc = float(data.get("mm_per_count", LASER_DEFAULT_MPC))
+            offset_mm = float(data.get("track_gauge_offset_mm", data.get("offset_mm", DEFAULT_GAUGE_OFFSET_MM)))
+            return {
+                "factor": 1.0,
+                "calibrated": True,
+                "calibration_type": "default_120_to_280",
+                "references": {
+                    "min_mm": 120.0,
+                    "max_mm": 280.0,
+                    "mm_per_count": mpc,
+                    "track_gauge_offset_mm": offset_mm,
+                    "raw_at_max": float(data.get("raw_at_max", 782.0)),
+                    "cal_max_mm": float(data.get("cal_max_mm", 237.4)),
+                },
+                "min_mm": 120.0,
+                "max_mm": 280.0,
+                "mm_per_count": mpc,
+                "track_gauge_offset_mm": offset_mm,
+            }
+
+        if "raw_at_max" in data:
+            raw_max = float(data["raw_at_max"])
+            max_mm = float(data.get("max_mm", 237.4))
+            mpc = float(data.get("mm_per_count", LASER_DEFAULT_MPC))
+            offset_mm = float(data.get("track_gauge_offset_mm", data.get("offset_mm", DEFAULT_GAUGE_OFFSET_MM)))
+            if not math.isfinite(raw_max):
+                raise ValueError("raw_at_max must be a finite ADC value")
+            references = {
+                "raw_at_max": raw_max,
+                "max_mm": max_mm,
+                "mm_per_count": mpc,
+                "track_gauge_offset_mm": offset_mm,
+            }
+            return {
+                "factor": 1.0,
+                "calibrated": True,
+                "calibration_type": "single_point",
+                "references": references,
+                "max_mm": max_mm,
+                "mm_per_count": mpc,
+                "track_gauge_offset_mm": offset_mm,
+            }
+
+        factor = float(data.get("cal_factor", data.get("factor", 1.0)))
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Cannot read laser calibration file {LASER_CAL_FILE}: {exc}") from exc
     min_factor = 1.0 / (1.0 + LASER_CAL_TOLERANCE_PCT / 100.0)
     max_factor = 1.0 / (1.0 - LASER_CAL_TOLERANCE_PCT / 100.0)
     if not math.isfinite(factor) or not min_factor <= factor <= max_factor:
         raise RuntimeError(f"Invalid laser calibration factor in {LASER_CAL_FILE}: {factor}")
-    return {"factor": factor, "calibrated": True, "references": None}
+    return {"factor": factor, "calibrated": True, "calibration_type": "single_factor", "references": None, "max_mm": 280.0}
 
 
-def _laser_gauge_from_raw(raw, raw_plus80, raw_zero, raw_minus80):
-    if raw < raw_minus80 or raw > raw_plus80:
+DEFAULT_GAUGE_OFFSET_MM = 1523.5
+
+
+def _laser_gauge_from_points(raw, raw_max=None, max_mm=237.4, mm_per_count=LASER_DEFAULT_MPC, mode="default", offset_mm=DEFAULT_GAUGE_OFFSET_MM, **kwargs):
+    if raw is None:
         return 0.0
-    if raw >= raw_zero:
-        return LASER_DISPLAY_MIN_MM + (raw_plus80 - raw) * (
-            200.0 - LASER_DISPLAY_MIN_MM
-        ) / (raw_plus80 - raw_zero)
-    return 200.0 + (raw_zero - raw) * (
-        LASER_DISPLAY_MAX_MM - 200.0
-    ) / (raw_zero - raw_minus80)
+    raw_val = float(raw)
+    mpc = float(mm_per_count) if mm_per_count else LASER_DEFAULT_MPC
+    offset = float(offset_mm) if offset_mm is not None else DEFAULT_GAUGE_OFFSET_MM
+    if mode in ("default", "default_120_to_280") or raw_max is None:
+        val = 280.0 - raw_val * mpc
+        laser_mm = max(120.0, min(280.0, val))
+    else:
+        laser_mm = max(0.0, float(max_mm) - (raw_val - float(raw_max)) * mpc)
+    return laser_mm + offset
+
+
+_laser_gauge_from_two_point = _laser_gauge_from_points
+
+
+def _laser_gauge_from_raw(raw, raw_plus, raw_zero, raw_minus, span_mm=40.0):
+    clamped_raw = max(raw_minus, min(raw_plus, raw))
+    min_mm = 200.0 - span_mm
+    max_mm = 200.0 + span_mm
+    if clamped_raw >= raw_zero:
+        span = raw_plus - raw_zero
+        if span <= 0:
+            return 200.0
+        return min_mm + (raw_plus - clamped_raw) * (200.0 - min_mm) / span
+    span = raw_zero - raw_minus
+    if span <= 0:
+        return 200.0
+    return 200.0 + (raw_zero - clamped_raw) * (max_mm - 200.0) / span
 
 
 class SharedMemorySensorThread(gui_app.SensorThread):
@@ -332,6 +409,11 @@ class SharedMemorySensorThread(gui_app.SensorThread):
         self._needs_zero = False
         self._laser_cal_samples = []
         self._laser_cal_point = None
+
+    def reset(self):
+        super().reset()
+        if hasattr(self, "_bridge") and self._bridge:
+            self._bridge.reset_display_reference()
 
     def laser_read_raw(self):
         adc_path = os.environ.get("RAIL_ADC_PATH", "/sys/bus/iio/devices/iio:device0/in_voltage0_raw")
@@ -346,51 +428,32 @@ class SharedMemorySensorThread(gui_app.SensorThread):
     def laser_gauge_readout(self):
         raw = self.laser_read_raw()
         calibration = _laser_calibration_state()
-        if calibration["references"] is not None:
-            raw_plus80 = calibration["references"]["raw_at_plus80"]
-            raw_zero = calibration["references"]["raw_at_zero"]
-            raw_minus80 = calibration["references"]["raw_at_minus80"]
+        cal_type = calibration.get("calibration_type", "default_120_to_280")
+        mpc = calibration.get("mm_per_count", LASER_DEFAULT_MPC)
+        offset_mm = calibration.get("track_gauge_offset_mm", DEFAULT_GAUGE_OFFSET_MM)
+        if cal_type in ("default", "default_120_to_280"):
+            gauge_mm = _laser_gauge_from_points(raw, mm_per_count=mpc, mode="default", offset_mm=offset_mm)
             corrected = raw
-            tolerance = raw_plus80 * LASER_ENDPOINT_TOLERANCE_PCT / 100.0
-            if raw < raw_minus80 - tolerance or raw > raw_plus80 + tolerance:
-                gauge_mm = 0.0
-            else:
-                corrected = max(raw_minus80, min(raw_plus80, raw))
-                gauge_mm = _laser_gauge_from_raw(
-                    corrected, raw_plus80, raw_zero, raw_minus80
-                )
+        elif calibration["references"] is not None and "raw_at_max" in calibration["references"]:
+            refs = calibration["references"]
+            raw_max = refs["raw_at_max"]
+            max_mm = refs.get("max_mm", 237.4)
+            gauge_mm = _laser_gauge_from_points(raw, raw_max=raw_max, max_mm=max_mm, mm_per_count=mpc, mode="single_point", offset_mm=offset_mm)
+            corrected = raw
         else:
-            corrected = raw * calibration["factor"]
-            if calibration["calibrated"]:
-                raw_plus80, raw_zero, raw_minus80 = (
-                    LASER_RAW_PLUS80, LASER_RAW_ZERO, LASER_RAW_MINUS80
-                )
-            else:
-                raw_plus80 = float(os.environ.get("RAIL_LASER_RAW_AT_PLUS80", "2957.5"))
-                raw_zero = float(os.environ.get("RAIL_LASER_RAW_AT_ZERO", "1365.0"))
-                raw_minus80 = float(os.environ.get("RAIL_LASER_RAW_AT_MINUS80", "0.0"))
-            endpoint_tolerance = raw_plus80 * LASER_ENDPOINT_TOLERANCE_PCT / 100.0
-            if (corrected < raw_minus80 - endpoint_tolerance or
-                    corrected > raw_plus80 + endpoint_tolerance):
-                gauge_mm = 0.0
-            else:
-                corrected = max(raw_minus80, min(raw_plus80, corrected))
-                gauge_mm = _laser_gauge_from_raw(
-                    corrected, raw_plus80, raw_zero, raw_minus80
-                )
+            gauge_mm = _laser_gauge_from_points(raw, mm_per_count=mpc, mode="default", offset_mm=offset_mm)
+            corrected = raw
         return {
             "raw": raw,
             "corrected_raw": corrected,
             "gauge_mm": gauge_mm,
             "calibrated": calibration["calibrated"],
             "factor": calibration["factor"],
-            "calibration_type": (
-                "three_point" if calibration["references"] is not None else "single_factor"
-            ),
+            "calibration_type": cal_type,
         }
 
     def begin_laser_calibration(self, point):
-        if point not in ("plus80", "zero", "minus80"):
+        if point not in ("min", "mid", "max", "plus40", "zero", "minus40", "plus80", "minus80"):
             raise ValueError(f"Unsupported laser calibration point: {point}")
         self._laser_cal_point = point
         self._laser_cal_samples = []
@@ -431,13 +494,47 @@ class SharedMemorySensorThread(gui_app.SensorThread):
         }
 
     def save_laser_calibration(self, captures):
+        if "max" in captures:
+            mean_max = float(captures["max"]["measured_mean_raw"])
+            if not (math.isfinite(mean_max) and 0.0 <= mean_max <= LASER_ADC_MAX_RAW):
+                raise RuntimeError("MAX capture mean is outside the ADC range")
+            payload = {
+                "cal_factor": 1.0,
+                "calibration_type": "single_point",
+                "cal_reference_point": "max",
+                "max_mm": 237.4,
+                "raw_at_max": round(mean_max, 1),
+                "mm_per_count": LASER_DEFAULT_MPC,
+                "captures": {
+                    "max": {
+                        "measured_mean_raw": round(mean_max, 1),
+                        "sample_count": int(captures["max"]["sample_count"]),
+                        "sample_min_raw": int(captures["max"]["sample_min_raw"]),
+                        "sample_max_raw": int(captures["max"]["sample_max_raw"]),
+                    },
+                },
+            }
+            LASER_CAL_FILE.parent.mkdir(parents=True, exist_ok=True)
+            temporary = LASER_CAL_FILE.with_name(LASER_CAL_FILE.name + ".tmp")
+            temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            os.replace(temporary, LASER_CAL_FILE)
+            return payload
+        raise RuntimeError("No MAX capture available to save")
+
         point_to_key = {
-            "plus80": "raw_at_plus80",
+            "plus40": "raw_at_plus40",
             "zero": "raw_at_zero",
-            "minus80": "raw_at_minus80",
+            "minus40": "raw_at_minus40",
         }
-        if set(captures) != set(point_to_key):
-            raise RuntimeError("Capture +80, 0, and -80 before saving the three-point calibration")
+        # Allow either plus40/zero/minus40 or plus80/zero/minus80
+        if set(captures) == {"plus80", "zero", "minus80"}:
+            point_to_key = {
+                "plus80": "raw_at_plus40",
+                "zero": "raw_at_zero",
+                "minus80": "raw_at_minus40",
+            }
+        elif set(captures) != set(point_to_key):
+            raise RuntimeError("Capture MIN and MAX before saving the calibration")
         references = {}
         capture_data = {}
         for point, key in point_to_key.items():
@@ -452,15 +549,19 @@ class SharedMemorySensorThread(gui_app.SensorThread):
                 "sample_min_raw": int(capture["sample_min_raw"]),
                 "sample_max_raw": int(capture["sample_max_raw"]),
             }
-        if not references["raw_at_plus80"] > references["raw_at_zero"] > references["raw_at_minus80"]:
+        if not references["raw_at_plus40"] > references["raw_at_zero"] > references["raw_at_minus40"]:
             raise RuntimeError(
-                "Raw readings must decrease in order from +80 to 0 to -80. "
+                "Raw readings must decrease in order from +40 to 0 to -40. "
                 "Check point placement, sensor direction, and ADC signal."
             )
+        # Store backward-compatible +80/-80 keys too
+        references["raw_at_plus80"] = references["raw_at_plus40"]
+        references["raw_at_minus80"] = references["raw_at_minus40"]
         LASER_CAL_FILE.parent.mkdir(parents=True, exist_ok=True)
         temporary = LASER_CAL_FILE.with_name(LASER_CAL_FILE.name + ".tmp")
         payload = {
             "cal_factor": 1.0,
+            "cal_span_mm": 40.0,
             "calibration_type": "three_point",
             **references,
             "captures": capture_data,
@@ -518,18 +619,11 @@ class SharedMemorySensorThread(gui_app.SensorThread):
                 continue
 
             try:
-                if self.active:
-                    sample = self._bridge.next_display_sample()
-                    self._raw_total = int(sample["encoder_count"])
-                    self.motion.emit(self._bridge.is_moving(sample))
-                    self._emit_fault("" if sample["scl_ok"] else "SCL3300 backend not ready")
-                    self.data_ready.emit(sample)
-                else:
-                    # Keep the hardware path warm while STOP is selected, but
-                    # do not update dashboard values or CSV samples.
-                    frame = self._bridge.read_next_frame(require_new=True)
-                    self._raw_total = frame.encoder_count
-                    self._emit_fault("" if frame.scl_ok else "SCL3300 backend not ready")
+                sample = self._bridge.next_display_sample()
+                self._raw_total = int(sample["encoder_count"])
+                self.motion.emit(self._bridge.is_moving(sample))
+                self._emit_fault("" if sample["scl_ok"] else "SCL3300 backend not ready")
+                self.data_ready.emit(sample)
             except Exception as exc:
                 self._emit_fault(str(exc))
                 time.sleep(0.5)
@@ -572,6 +666,13 @@ class BufferedCSVLogger(gui_app.CSVLogger):
         safe_ts = gui_app.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"BLE_{safe_ts}.csv"
         station_values = dict(getattr(self, "_station_values", {}) or {})
+        if not station_values.get("Station No"):
+            station_values["Station No"] = "BLE"
+            station_values["Station Code"] = "BLE"
+        if not station_values.get("Name"):
+            station_values["Name"] = "Operator"
+        if not station_values.get("Designation"):
+            station_values["Designation"] = "Inspector"
         ref_type = getattr(self, "_ref_type", "")
         ref_value = getattr(self, "_ref_value", "")
         self.path = os.path.join(directory, filename)
@@ -640,6 +741,10 @@ class BufferedCSVLogger(gui_app.CSVLogger):
     def stop(self):
         if self._f:
             self._f.flush()
+            try:
+                os.fsync(self._f.fileno())
+            except OSError:
+                pass
         saved_path = self.path
         super().stop()
         return saved_path
@@ -653,6 +758,8 @@ class CloudPushThread(gui_app.QThread):
         self.csv_path = csv_path
 
     def run(self):
+        global CLOUD_URL
+        CLOUD_URL = _get_configured_cloud_url()
         if not CLOUD_URL:
             self.done.emit(False, "Cloud URL not configured")
             return
@@ -718,32 +825,40 @@ class RuntimeNetThread(gui_app.NetThread):
     def _ping(self):
         if gui_app.HW_SIM or not CLOUD_URL:
             return True
-        try:
-            health_url = _cloud_root(CLOUD_URL).rstrip("/") + "/health"
-            request = urllib.request.Request(
-                health_url,
-                method="GET",
-                headers={"User-Agent": "RailInspection-BBB/1.0"},
-            )
-            with urllib.request.urlopen(request, timeout=5) as response:
-                return response.status == 200
-        except Exception:
-            # The BBB's older OpenSSL build cannot always negotiate TLS with
-            # the cloud host.  The top bar is an LTE indicator, so retain an
-            # online state when the modem itself can reach the internet.
+        # 1. Test HTTP to LWTMT Cloud Dashboard
+        for check_url in [
+            _cloud_root(CLOUD_URL).rstrip("/") + "/",
+            _cloud_root(CLOUD_URL).rstrip("/") + "/api/survey",
+        ]:
+            try:
+                request = urllib.request.Request(
+                    check_url,
+                    method="GET",
+                    headers={"User-Agent": "RailInspection-BBB/1.0"},
+                )
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    if response.status in {200, 204, 301, 302, 400, 404}:
+                        return True
+            except urllib.error.HTTPError:
+                return True
+            except Exception:
+                pass
+
+        # 2. Ping server host or gateway
+        host = self.cfg.get("server", "20.8.1.15")
+        for target in [host, "20.8.0.1", "1.1.1.1"]:
             try:
                 result = subprocess.run(
-                    [
-                        "ping", "-c", "1", "-W", "2", "-I",
-                        self.cfg.get("lte_iface", "usb2"), "1.1.1.1",
-                    ],
+                    ["ping", "-c", "1", "-W", "5", target],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=5,
+                    timeout=6,
                 )
-                return result.returncode == 0
+                if result.returncode == 0:
+                    return True
             except Exception:
-                return False
+                pass
+        return False
 
 
 def save_inclinometer_calibration(calibration):
@@ -789,14 +904,7 @@ def load_runtime_cfg():
 
 def configure_permissible_limits(cfg):
     """Apply rail_config.json limits to the live status colours."""
-    def bands(value):
-        return (None, None) if value is None else (float(value) * 0.8, float(value))
-    limits = gui_app.permissible_limits(cfg)
-    gui_app._THRESH.update({
-        "gauge": bands(limits["Gauge"]),
-        "cross": bands(limits["Crosslevel"]),
-        "twist": bands(limits["Twist"]),
-    })
+    gui_app.sync_runtime_thresholds(cfg)
 
 
 class RuntimeInclinCal(gui_app.QWidget):
@@ -858,6 +966,23 @@ class RuntimeInclinCal(gui_app.QWidget):
         self._reference_s.changed.connect(self._reference_invalidated)
         row.addWidget(self._reference_s, 1)
         lay.addLayout(row)
+
+        presets = gui_app.QHBoxLayout()
+        presets.setSpacing(6)
+        presets.addWidget(gui_app._lbl("Presets:", "#718096", 9, True))
+        for p_val, p_lbl in [(25.0, "+25 mm"), (50.0, "+50 mm"), (80.0, "+80 mm"), (100.0, "+100 mm"), (-50.0, "-50 mm")]:
+            p_btn = gui_app.QPushButton(p_lbl)
+            p_btn.setFixedHeight(34)
+            p_btn.setStyleSheet(
+                "QPushButton { background:#F1F5F9; border:1px solid #CBD5E1; border-radius:6px;"
+                " color:#1E293B; font-size:10pt; font-weight:bold; padding:0 8px; }"
+                "QPushButton:hover { background:#E2E8F0; }"
+                "QPushButton:pressed { background:#CBD5E1; }"
+            )
+            p_btn.clicked.connect(lambda _, v=p_val: self._apply_preset_ref(v))
+            presets.addWidget(p_btn)
+        presets.addStretch()
+        lay.addLayout(presets)
 
         buttons = gui_app.QGridLayout()
         buttons.setSpacing(8)
@@ -982,45 +1107,65 @@ class RuntimeInclinCal(gui_app.QWidget):
             self._reference_captured = False
             self._status.setText("Status: calibration value changed; capture reference again.")
 
+    def _apply_preset_ref(self, val):
+        self._reference_s.set_value(val)
+        self._reference_invalidated(val)
+
 
 def _refresh_latest_data(self):
+    session_state = (self.logger.count, self.sensor.active, self.logger.path or "")
+    if session_state != getattr(self, "_rendered_session_state", None):
+        self.dash.set_session(*session_state)
+        self._rendered_session_state = session_state
+
+    # When survey is NOT active (IDLE / STOPPED / PAUSED), do not update dashboard cards
+    if not getattr(self.sensor, "active", False):
+        return
+
     latest = getattr(self, "_latest_sensor_data", None)
     if latest is None:
         return
     if latest != getattr(self, "_rendered_sensor_data", None):
         self.dash.update_data(latest)
         self._rendered_sensor_data = dict(latest)
-    if self.sensor.active and self.stack.currentWidget() is self.entry:
+    if self.stack.currentWidget() is self.entry:
         self.entry.push_sensor_data(latest)
-    session_state = (self.logger.count, self.sensor.active, self.logger.path or "")
-    if session_state != getattr(self, "_rendered_session_state", None):
-        self.dash.set_session(*session_state)
-        self._rendered_session_state = session_state
 
 
 def optimized_on_data(self, d):
     self._latest_sensor_data = d
-    for key in self.history:
-        if key in d:
-            self.history[key].append(d[key])
-            if len(self.history[key]) > 5000:
-                self.history[key].pop(0)
+    if getattr(self.sensor, "active", False):
+        for key in self.history:
+            if key in d:
+                self.history[key].append(d[key])
+                if len(self.history[key]) > 5000:
+                    self.history[key].pop(0)
 
-    if self.sensor.active:
         _apply_station_reference(self)
         self.logger.write(d)
 
 
 def optimized_metric_refresh(self, val):
+    self._last_raw_val = val
     display = str(val)
-    if getattr(self, "_last_display", None) == display:
+    band_sig = (
+        gui_app._GAUGE_BAND.get("mode"),
+        gui_app._GAUGE_BAND.get("min_abs"),
+        gui_app._GAUGE_BAND.get("max_abs"),
+        gui_app._THRESH.get(self.key),
+    )
+    if getattr(self, "_last_display", None) == display and getattr(self, "_last_band_sig", None) == band_sig:
         return
 
-    warn, alarm = gui_app._THRESH.get(self.key, (None, None))
-    dev = abs(float(val))
-    if alarm is not None and dev >= alarm:
+    try:
+        fval = float(val)
+        level = gui_app.metric_alarm_state(self.key, fval)
+    except (ValueError, TypeError):
+        level = "nominal"
+
+    if level == "alarm":
         state = ("alarm", gui_app.RED, "ALARM", "QFrame#Card{background:#FFEBEE; border:1px solid #DDE3EA; border-left:4px solid " + gui_app.RED + "; border-radius:10px;}", "⚠  ALARM")
-    elif warn is not None and dev >= warn:
+    elif level == "warn":
         state = ("warn", gui_app.WARN, "MONITOR", "QFrame#Card{background:#FFF3E0; border:1px solid #DDE3EA; border-left:4px solid " + gui_app.WARN + "; border-radius:10px;}", "△  WARN")
     else:
         state = ("nominal", self.color, "NOMINAL", "QFrame#Card{background:#FFFFFF; border:1px solid #DDE3EA; border-left:4px solid " + self.color + "; border-radius:10px;}", "")
@@ -1036,6 +1181,7 @@ def optimized_metric_refresh(self, val):
 
     self._val.setText(display)
     self._last_display = display
+    self._last_band_sig = band_sig
 
 
 def optimized_dash_session(self, n, running, path=""):
@@ -1224,6 +1370,7 @@ def patched_data_entry_init(original_init):
 
 class RuntimeLaserCalibrationPanel(gui_app.QWidget):
     saved = gui_app.pyqtSignal(str, dict)
+    sig_track_mode = gui_app.pyqtSignal(str)
 
     def __init__(self, cfg, sensor):
         super().__init__()
@@ -1236,19 +1383,25 @@ class RuntimeLaserCalibrationPanel(gui_app.QWidget):
         root.setContentsMargins(24, 22, 24, 22)
         root.setSpacing(14)
 
-        title = gui_app.QLabel("LASER ADC CALIBRATION")
+        self._track_selector = gui_app.TrackModeSelector(
+            gui_app.gauge_limits_for_mode(cfg)[0], compact=False
+        )
+        self._track_selector.mode_changed.connect(self._on_mode_changed)
+        root.addWidget(self._track_selector)
+
+        title = gui_app.QLabel("TRACK GAUGE LASER CALIBRATION")
         title.setStyleSheet("color:#1565C0; font-size:17pt; font-weight:700;")
         root.addWidget(title)
         instructions = gui_app.QLabel(
-            "Place the laser at each known Panasonic point and capture 50 ADC samples. "
-            "Capture +80, 0, and -80, then save the three-point mapping."
+            "Position the laser target at MAX distance (237.4 mm). "
+            "Capture MAX reference, then click SAVE CALIBRATION."
         )
         instructions.setWordWrap(True)
         instructions.setStyleSheet("color:#5B6575; font-size:11pt;")
         root.addWidget(instructions)
 
         refs = gui_app.QLabel(
-            "Reference mapping: +80 → 120 mm  |  0 → 200 mm  |  -80 → 280 mm"
+            "Reference mapping: MAX → 237.4 mm"
         )
         refs.setStyleSheet("color:#1A2332; font-size:11pt; font-weight:600;")
         root.addWidget(refs)
@@ -1262,24 +1415,17 @@ class RuntimeLaserCalibrationPanel(gui_app.QWidget):
         root.addWidget(self._live_label)
 
         buttons = gui_app.QGridLayout()
-        self._plus80_button = gui_app.QPushButton("CAPTURE +80")
-        self._zero_button = gui_app.QPushButton("CAPTURE 0")
-        self._minus80_button = gui_app.QPushButton("CAPTURE -80")
+        self._max_button = gui_app.QPushButton("CAPTURE MAX (237.4 mm)")
         self._cancel_button = gui_app.QPushButton("CANCEL")
-        self._save_button = gui_app.QPushButton("SAVE 3-POINT CALIBRATION")
+        self._save_button = gui_app.QPushButton("SAVE CALIBRATION")
         for button in (
-            self._plus80_button, self._zero_button, self._minus80_button,
-            self._cancel_button, self._save_button,
+            self._max_button, self._cancel_button, self._save_button,
         ):
-            button.setMinimumHeight(48)
-        buttons.addWidget(self._plus80_button, 0, 0)
-        buttons.addWidget(self._zero_button, 0, 1)
-        buttons.addWidget(self._minus80_button, 0, 2)
-        buttons.addWidget(self._save_button, 1, 0, 1, 2)
-        buttons.addWidget(self._cancel_button, 1, 2)
-        self._set_capture_button_style(self._plus80_button, "idle")
-        self._set_capture_button_style(self._zero_button, "idle")
-        self._set_capture_button_style(self._minus80_button, "idle")
+            button.setMinimumHeight(52)
+        buttons.addWidget(self._max_button, 0, 0, 1, 2)
+        buttons.addWidget(self._save_button, 1, 0)
+        buttons.addWidget(self._cancel_button, 1, 1)
+        self._set_capture_button_style(self._max_button, "idle")
         self._set_capture_button_style(self._cancel_button, "cancel")
         self._set_capture_button_style(self._save_button, "disabled")
         root.addLayout(buttons)
@@ -1290,9 +1436,7 @@ class RuntimeLaserCalibrationPanel(gui_app.QWidget):
         root.addWidget(self._status_label)
         root.addStretch(1)
 
-        self._plus80_button.clicked.connect(lambda: self._start_capture("plus80"))
-        self._zero_button.clicked.connect(lambda: self._start_capture("zero"))
-        self._minus80_button.clicked.connect(lambda: self._start_capture("minus80"))
+        self._max_button.clicked.connect(lambda: self._start_capture("max"))
         self._cancel_button.clicked.connect(self._cancel_capture)
         self._save_button.clicked.connect(self._save_calibration)
         self._capture_timer = gui_app.QTimer(self)
@@ -1307,14 +1451,11 @@ class RuntimeLaserCalibrationPanel(gui_app.QWidget):
         cfg.setdefault("adc", {})["calibrated"] = state["calibrated"]
         self._captured_refs = {}
         if state["references"] is not None:
-            for point, key in (
-                ("plus80", "raw_at_plus80"),
-                ("zero", "raw_at_zero"),
-                ("minus80", "raw_at_minus80"),
-            ):
-                value = state["references"][key]
-                self._captured_refs[point] = {
-                    "point": point,
+            refs_dict = state["references"]
+            if "raw_at_max" in refs_dict and refs_dict["raw_at_max"] is not None:
+                value = refs_dict["raw_at_max"]
+                self._captured_refs["max"] = {
+                    "point": "max",
                     "measured_mean_raw": value,
                     "sample_count": LASER_CAL_SAMPLES,
                     "sample_min_raw": round(value),
@@ -1323,14 +1464,13 @@ class RuntimeLaserCalibrationPanel(gui_app.QWidget):
         if state["calibrated"]:
             cfg["adc"]["factor"] = state["factor"]
             self._status_label.setText(
-                "Three-point calibration loaded from " + str(LASER_CAL_FILE)
+                f"MAX calibration loaded from " + str(LASER_CAL_FILE)
                 if state["references"] is not None else
-                f"Legacy single-factor calibration loaded: {state['factor']:.5f}. "
-                "Capture all three references to replace it."
+                f"Calibration loaded: {state['factor']:.5f}. Capture MAX (237.4 mm) to update."
             )
         else:
             self._status_label.setText(
-                "Capture +80, 0, and -80 before saving the calibration."
+                "Capture MAX (237.4 mm) before saving calibration."
             )
         self._update_capture_buttons()
         self._refresh_readout()
@@ -1364,11 +1504,11 @@ class RuntimeLaserCalibrationPanel(gui_app.QWidget):
         button.setStyleSheet(styles[state])
 
     def _update_capture_buttons(self, progress=0):
-        names = {"plus80": "+80", "zero": "0", "minus80": "-80"}
+        names = {
+            "max": "MAX (237.4 mm)",
+        }
         buttons = {
-            "plus80": self._plus80_button,
-            "zero": self._zero_button,
-            "minus80": self._minus80_button,
+            "max": self._max_button,
         }
         for point, button in buttons.items():
             if self._capture_active and point == self._capture_point:
@@ -1387,8 +1527,10 @@ class RuntimeLaserCalibrationPanel(gui_app.QWidget):
                 button.setText(f"CAPTURE {names[point]}")
                 button.setEnabled(True)
                 self._set_capture_button_style(button, "idle")
-        ready = len(self._captured_refs) == 3 and not self._capture_active
+        ready = ("max" in self._captured_refs) and not self._capture_active
         self._save_button.setEnabled(ready)
+        if ready:
+            self._save_button.setText("SAVE CALIBRATION")
         self._set_capture_button_style(self._save_button, "saved" if ready else "disabled")
 
     def _start_capture(self, point):
@@ -1435,7 +1577,7 @@ class RuntimeLaserCalibrationPanel(gui_app.QWidget):
                     f"Captured {point}: mean raw "
                     f"{result['measured_mean_raw']:.1f}, spread "
                     f"{result['sample_max_raw'] - result['sample_min_raw']}. "
-                    f"{len(self._captured_refs)}/3 reference points captured."
+                    f"{len(self._captured_refs)} reference point(s) captured."
                 )
         except Exception as exc:
             self._capture_timer.stop()
@@ -1447,9 +1589,18 @@ class RuntimeLaserCalibrationPanel(gui_app.QWidget):
         finally:
             self._refresh_readout()
 
+    def set_track_mode(self, mode):
+        self._track_selector.set_mode(mode, emit_signal=False)
+
+    def _on_mode_changed(self, mode):
+        norm = gui_app.set_track_mode(self._cfg, mode)
+        gui_app.save_cfg(self._cfg)
+        self.sig_track_mode.emit(norm)
+
     def _save_calibration(self):
         try:
             result = self._sensor.save_laser_calibration(self._captured_refs)
+            gui_app.set_track_mode(self._cfg, self._track_selector.mode())
             self._cfg.setdefault("adc", {}).update({
                 "factor": result["cal_factor"],
                 "calibrated": True,
@@ -1459,7 +1610,7 @@ class RuntimeLaserCalibrationPanel(gui_app.QWidget):
             self._status_label.setText(f"Calibration save failed: {exc}")
             return
         self._status_label.setText(
-            "Saved three-point calibration. The sensor service will reload it automatically."
+            "Saved two-point calibration. The sensor service will reload it automatically."
         )
         self.saved.emit("adc", self._cfg["adc"])
 
@@ -1471,8 +1622,8 @@ class RuntimeLaserCalibrationPanel(gui_app.QWidget):
             return
         state = "calibrated" if result["calibrated"] else "uncalibrated"
         calibration_label = (
-            "3-point mapping"
-            if result["calibration_type"] == "three_point"
+            "Single-point MAX (237.4 mm)"
+            if result.get("calibration_type") in ("single_point", "two_point")
             else f"Factor: {result['factor']:.5f}"
         )
         self._live_label.setText(
@@ -1490,6 +1641,7 @@ def patched_calibration_page_init(original_init):
             if isinstance(scroll_area, gui_app.QScrollArea):
                 panel = RuntimeLaserCalibrationPanel(cfg, sensor)
                 panel.saved.connect(self._on_saved)
+                panel.sig_track_mode.connect(self.sig_track_mode.emit)
                 scroll_area.setWidget(panel)
                 if cfg.get("adc", {}).get("calibrated", False):
                     self._btns[0][0].setText("✓  " + self._btns[0][1])
@@ -1597,7 +1749,6 @@ class RuntimePopupKeyboardDialog(gui_app.QDialog):
 
         special = gui_app.QHBoxLayout()
         special.setSpacing(key_gap)
-        special.addSpacing(alpha_key_w)
         for ch, lbl, width in [
             (" ", "SPACE", space_key_w),
             ("-", "-", special_key_w),
@@ -1605,6 +1756,10 @@ class RuntimePopupKeyboardDialog(gui_app.QDialog):
             ("/", "/", special_key_w),
             ("@", "@", special_key_w),
             ("_", "_", special_key_w),
+            ("#", "#", special_key_w),
+            ("$", "$", special_key_w),
+            ("*", "*", special_key_w),
+            ("!", "!", special_key_w),
         ]:
             btn = gui_app.QPushButton(lbl)
             btn.setFixedSize(width, alpha_key_h)
@@ -1808,18 +1963,8 @@ def _push_csv_to_cloud(self, csv_path, wait=False, notify=True):
 
 
 def _offer_usb_export(self, csv_path):
-    """Offer a non-destructive copy of the survey that has just finished."""
+    """Automatically copy completed survey to inserted USB drive on survey stop."""
     if not csv_path or not os.path.exists(csv_path):
-        return
-    answer = gui_app.QMessageBox.question(
-        self, "USB pen drive export",
-        "Survey saved locally:\n\n%s\n\nCopy this survey to the inserted USB pen drive?"
-        "\n\nChoose No to skip USB export. Cloud upload will continue normally."
-        % os.path.basename(csv_path),
-        gui_app.QMessageBox.Yes | gui_app.QMessageBox.No,
-        gui_app.QMessageBox.No,
-    )
-    if answer != gui_app.QMessageBox.Yes:
         return
     helper = PROJECT_DIR / "tools" / "export_surveys_to_usb.py"
     try:
@@ -1831,10 +1976,14 @@ def _offer_usb_export(self, csv_path):
         gui_app.QMessageBox.warning(
             self, "USB export", "Export timed out. Do not remove the USB drive; try again.")
         return
-    detail = (result.stdout or result.stderr or "USB export failed.").strip()
+    detail = (result.stdout or result.stderr or "").strip()
     if result.returncode == 0:
-        gui_app.QMessageBox.information(self, "USB export complete", detail)
-    else:
+        gui_app.QMessageBox.information(
+            self, "USB export complete",
+            detail + "\n\nNote: Open the password-protected .zip archive to access both .csv and .xlsx."
+        )
+    elif result.returncode != 4:
+        # Code 4 = no USB inserted; ignore silently so normal stop without USB is smooth.
         gui_app.QMessageBox.warning(self, "USB export", detail)
 
 
@@ -1847,6 +1996,11 @@ def optimized_on_toggle(self, running):
         _apply_station_reference(self)
         entry_values = dict(getattr(self.logger, "_station_values", {}) or {})
         if not any(str(value).strip() for value in entry_values.values()):
+            default_entry = {"Station No": "BLE", "Station Code": "BLE", "Name": "Operator", "Designation": "Inspector"}
+            self.logger._station_values = default_entry
+            self._runtime_saved_entry_values = default_entry
+            _apply_station_reference(self)
+        if False:
             self.sensor.active = False
             gui_app.QMessageBox.warning(
                 self,
@@ -1864,8 +2018,8 @@ def optimized_on_toggle(self, running):
         self.sensor.reset()
         latest = getattr(self, "_latest_sensor_data", None) or {}
         zero_sample = {
-            "gauge": latest.get("gauge", 0.0),
-            "cross": latest.get("cross", 0.0),
+            "gauge": 0.0,
+            "cross": 0.0,
             "twist": 0.0,
             "dist": 0.0,
             "lat": 0.0,
@@ -1873,10 +2027,10 @@ def optimized_on_toggle(self, running):
             "speed": 0.0,
             "scl_ok": latest.get("scl_ok", False),
             "encoder_ok": latest.get("encoder_ok", False),
-            "raw_cross_mm": latest.get("raw_cross_mm", latest.get("cross", 0.0)),
+            "raw_cross_mm": 0.0,
             "raw_twist_mm_m": 0.0,
-            "raw_gauge_mm": latest.get("raw_gauge_mm", latest.get("gauge", 0.0)),
-            "raw_dist_m": latest.get("raw_dist_m", 0.0),
+            "raw_gauge_mm": 0.0,
+            "raw_dist_m": 0.0,
             "ts": latest.get("ts", 0),
         }
         self._latest_sensor_data = zero_sample
@@ -1884,6 +2038,9 @@ def optimized_on_toggle(self, running):
         self.dash.update_data(zero_sample)
         saved_path = self.logger.stop()
         self.dash.set_session(self.logger.count, False, saved_path or "")
+        if hasattr(self, "csv_viewer"):
+            self.csv_viewer.set_csv_dir(self.cfg["csv_dir"])
+            self.csv_viewer.load_latest()
         _offer_usb_export(self, saved_path)
         _push_csv_to_cloud(self, saved_path, wait=False)
 
@@ -1933,6 +2090,7 @@ def patched_trackapp_init(original_init):
         self._rendered_sensor_data = None
         self._rendered_session_state = None
         self._runtime_saved_entry_values = {}
+        self.dash.update_data({"gauge": 0.0, "cross": 0.0, "twist": 0.0, "dist": 0.0})
         self.logger = BufferedCSVLogger()
         self.logger._track_app = self
         self.net.stop()
