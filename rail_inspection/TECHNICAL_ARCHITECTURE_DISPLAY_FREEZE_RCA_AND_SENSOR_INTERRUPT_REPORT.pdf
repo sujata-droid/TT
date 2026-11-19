@@ -1,0 +1,1705 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [ 7 0 R 9 0 R 11 0 R ] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold >>
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Contents 8 0 R /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R >> >> >>
+endobj
+8 0 obj
+<< /Length 9406 >>
+stream
+q
+0.5 w
+0.8 0.85 0.9 RG
+42 803.89 m 553.28 803.89 l S
+Q
+BT
+/F2 7.5 Tf
+0.08 0.28 0.50 rg
+42 809.89 Td
+(LWTMT TECHNICAL ARCHITECTURE & ENGINEERING REPORT) Tj
+ET
+BT
+/F1 7.5 Tf
+0.4 0.45 0.55 rg
+443.28 809.89 Td
+(LWTMT/ENG/RCA-INT/2026/02) Tj
+ET
+q
+0.5 w
+0.8 0.85 0.9 RG
+42 42 m 553.28 42 l S
+Q
+BT
+/F1 7.5 Tf
+0.4 0.45 0.55 rg
+42 30 Td
+(Light Weight Track Measuring Trolley -- Technical Architecture Report) Tj
+ET
+BT
+/F2 7.5 Tf
+0.08 0.28 0.50 rg
+478.28 30 Td
+(Page 1 of 3) Tj
+ET
+q
+0.5 w
+0.059 0.298 0.506 rg
+42.00 711.89 511.28 70.00 re
+f
+Q
+BT
+/F2 8.5 Tf
+0.576 0.773 0.992 rg
+58.00 773.89 Td
+(INDIAN RAILWAYS TRACK INSTRUMENTATION SYSTEMS) Tj
+ET
+BT
+/F2 15 Tf
+1.000 1.000 1.000 rg
+58.00 755.89 Td
+(Technical Architecture & Engineering Report) Tj
+ET
+BT
+/F1 9 Tf
+0.886 0.910 0.941 rg
+58.00 741.89 Td
+(Display Freeze Root Cause Analysis, Code Resolutions & Sensor Polling vs. Interrupt Breakdown) Tj
+ET
+BT
+/F2 8 Tf
+0.733 0.969 0.816 rg
+58.00 727.89 Td
+(VERIFIED PRODUCTION RELEASE v5.2.0-PROD | RDSO FRS No. TM/SM/FRS/013) Tj
+ET
+q
+0.5 w
+0.973 0.980 0.988 rg
+0.796 0.835 0.882 RG
+42.00 647.89 511.28 54.00 re
+B
+Q
+BT
+/F2 8.5 Tf
+0.059 0.090 0.165 rg
+56.00 689.89 Td
+(Target Hardware: BeagleBone Black Industrial \(AM335x ARM Cortex-A8 @ 1000 MHz\)) Tj
+ET
+BT
+/F1 8.5 Tf
+0.278 0.333 0.412 rg
+56.00 677.89 Td
+(Operating System: Linux Debian 10 \(Kernel 4.19-rt Real-Time Kernel\) | Memory: 512 MB DDR3) Tj
+ET
+BT
+/F1 8.5 Tf
+0.278 0.333 0.412 rg
+56.00 665.89 Td
+(Display Architecture: 1024x768 HDMI Display + USB HID Multi-Touch \(/dev/input/event1\)) Tj
+ET
+BT
+/F2 8.5 Tf
+0.051 0.278 0.631 rg
+56.00 653.89 Td
+(Date of Issue: November 17, 2026 | Document Reference: LWTMT/ENG/RCA-INT/2026/02) Tj
+ET
+q
+0.5 w
+0.082 0.396 0.753 rg
+42.00 611.89 4.00 18.00 re
+f
+Q
+BT
+/F2 15 Tf
+0.051 0.278 0.631 rg
+54.00 613.89 Td
+(1. Executive Summary) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 593.89 Td
+(This technical architecture report provides an exhaustive engineering analysis of the Light Weight Track Measuring) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 580.89 Td
+(Trolley \(LWTMT\). The report documents the exact root causes of previous touchscreen display freezes, the 7 code) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 567.89 Td
+(resolutions deployed, and a sensor-by-sensor physical-layer assessment of Hardware Interrupts vs. Timed Polling.) Tj
+ET
+q
+0.5 w
+0.941 1.000 0.957 rg
+0.886 0.910 0.941 RG
+42.00 483.89 511.28 80.00 re
+B
+Q
+q
+0.5 w
+0.220 0.631 0.412 rg
+42.00 483.89 4.00 80.00 re
+f
+Q
+BT
+/F2 9.5 Tf
+0.153 0.404 0.286 rg
+56.00 547.89 Td
+(CORE ARCHITECTURAL FINDING) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+56.00 533.89 Td
+(Display freezes were NEVER caused by sensor polling. The optimized 10 Hz sensor acquisition daemon consumes only) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+56.00 521.89 Td
+(1.6% CPU. The freezes were caused by CPU Gaussian drop-shadow rasterization \(92% CPU\), thread priority inversion) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+56.00 509.89 Td
+(\(SCHED_FIFO 98\), synchronous USB flushing on the Qt event loop, and HDMI TMDS sync loss caused by fb0/blank) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+56.00 497.89 Td
+(calls.) Tj
+ET
+q
+0.5 w
+0.082 0.396 0.753 rg
+42.00 445.89 4.00 18.00 re
+f
+Q
+BT
+/F2 15 Tf
+0.051 0.278 0.631 rg
+54.00 447.89 Td
+(2. Root Cause Analysis \(RCA\) & Code Resolutions) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 427.89 Td
+(Extensive profiling on the BeagleBone Black hardware identified 7 discrete failure mechanisms that were completely) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 414.89 Td
+(resolved:) Tj
+ET
+q
+0.5 w
+0.051 0.278 0.631 rg
+42.00 386.89 511.28 22.00 re
+f
+Q
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+48.00 392.89 Td
+(#) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+68.00 392.89 Td
+(Root Cause) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+163.00 392.89 Td
+(Technical Failure Mechanism) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+313.00 392.89 Td
+(File Modified) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+418.00 392.89 Td
+(Resolution & Impact) Tj
+ET
+q
+0.4 w
+0.973 0.980 0.988 rg
+0.886 0.910 0.941 RG
+42.00 332.89 511.28 52.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 372.89 Td
+(1) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 372.89 Td
+(Drop Shadows) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 372.89 Td
+(MetricCard had) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 361.89 Td
+(QGraphicsDropShadowEffect\(16\).) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 350.89 Td
+(CPU calculated 2D Gaussian blurs on) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 339.89 Td
+(all 4 cards at 100ms.) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+313.00 372.89 Td
+(railgui25.py) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 372.89 Td
+(Removed all drop shadows; replaced) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 361.89 Td
+(with clean CSS borders. CPU: 92%) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 350.89 Td
+(-> 14%.) Tj
+ET
+q
+0.4 w
+1.000 1.000 1.000 rg
+0.886 0.910 0.941 RG
+42.00 291.89 511.28 41.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 320.89 Td
+(2) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 320.89 Td
+(Real-Time Starvation) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 320.89 Td
+(sensor_service ran at SCHED_FIFO) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 309.89 Td
+(98. Any GPIO voltage glitch starved) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 298.89 Td
+(Xorg and Qt of CPU.) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+313.00 320.89 Td
+(sensor_service.c) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 320.89 Td
+(Switched to SCHED_OTHER \(nice) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 309.89 Td
+(-5\). Added 25us digital glitch filter) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 298.89 Td
+(and event batching.) Tj
+ET
+q
+0.4 w
+0.973 0.980 0.988 rg
+0.886 0.910 0.941 RG
+42.00 250.89 511.28 41.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 279.89 Td
+(3) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 279.89 Td
+(PRU1 Boot Lag) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 279.89 Td
+(Cold boot driver lag caused fallback to) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 268.89 Td
+(Linux GPIO edge interrupts, flooding) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 257.89 Td
+(ARM core with IRQs.) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+313.00 279.89 Td
+(setup_encoder_pru.sh) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+313.00 268.89 Td
+(pru/encoder_pru1.c) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 279.89 Td
+(Automated PRU1 firmware boot; 1) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 268.89 Td
+(MHz quadrature sampling offloaded) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 257.89 Td
+(100% to PRU \(0% ARM CPU\).) Tj
+ET
+q
+0.4 w
+1.000 1.000 1.000 rg
+0.886 0.910 0.941 RG
+42.00 209.89 511.28 41.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 238.89 Td
+(4) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 238.89 Td
+(100Hz Sysfs ADC) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 238.89 Td
+(sensor_service opened and closed) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 227.89 Td
+(in_voltage0_raw 100 times/sec using) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 216.89 Td
+(repeated fopen/fclose.) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+313.00 238.89 Td
+(sensor_service.c) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 238.89 Td
+(Paced ADC sysfs reads to 10 Hz;) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 227.89 Td
+(used persistent file descriptors and) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 216.89 Td
+(pread. CPU: 8% -> 1.6%.) Tj
+ET
+q
+0.4 w
+0.973 0.980 0.988 rg
+0.886 0.910 0.941 RG
+42.00 168.89 511.28 41.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 197.89 Td
+(5) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 197.89 Td
+(Sync USB Export) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 197.89 Td
+(CSV/Excel generation and flash flush) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 186.89 Td
+(ran on main Qt GUI thread, freezing) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 175.89 Td
+(touchscreen for up to 180s.) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+313.00 197.89 Td
+(railgui25.py) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+313.00 186.89 Td
+(export_surveys_to_usb.py) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 197.89 Td
+(Moved export to background) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 186.89 Td
+(UsbExportThread with responsive) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 175.89 Td
+(modal progress dialog. 0 GUI freeze.) Tj
+ET
+q
+0.4 w
+1.000 1.000 1.000 rg
+0.886 0.910 0.941 RG
+42.00 116.89 511.28 52.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 156.89 Td
+(6) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 156.89 Td
+(Inclinometer Wake) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 156.89 Td
+(Murata SCL3300 resting MEMS noise) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 145.89 Td
+(\(0.2-0.4mm\) exceeded 0.15mm) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 134.89 Td
+(threshold, waking display every) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 123.89 Td
+(500ms.) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+313.00 156.89 Td
+(bbb_runtime/) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+313.00 145.89 Td
+(backend_bridge.py) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 156.89 Td
+(Grounded is_moving\(\) strictly on) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 145.89 Td
+(wheel encoder counts and distance) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 134.89 Td
+(advancement \(>= 5mm\).) Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Contents 10 0 R /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R >> >> >>
+endobj
+10 0 obj
+<< /Length 8359 >>
+stream
+q
+0.5 w
+0.8 0.85 0.9 RG
+42 803.89 m 553.28 803.89 l S
+Q
+BT
+/F2 7.5 Tf
+0.08 0.28 0.50 rg
+42 809.89 Td
+(LWTMT TECHNICAL ARCHITECTURE & ENGINEERING REPORT) Tj
+ET
+BT
+/F1 7.5 Tf
+0.4 0.45 0.55 rg
+443.28 809.89 Td
+(LWTMT/ENG/RCA-INT/2026/02) Tj
+ET
+q
+0.5 w
+0.8 0.85 0.9 RG
+42 42 m 553.28 42 l S
+Q
+BT
+/F1 7.5 Tf
+0.4 0.45 0.55 rg
+42 30 Td
+(Light Weight Track Measuring Trolley -- Technical Architecture Report) Tj
+ET
+BT
+/F2 7.5 Tf
+0.08 0.28 0.50 rg
+478.28 30 Td
+(Page 2 of 3) Tj
+ET
+q
+0.4 w
+0.973 0.980 0.988 rg
+0.886 0.910 0.941 RG
+42.00 738.89 511.28 41.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 767.89 Td
+(7) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 767.89 Td
+(HDMI Sync Loss \(fb0\)) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 767.89 Td
+(Writing "1" to fb0/blank killed LCD) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 756.89 Td
+(pixel clock while HDMI transmitter) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+163.00 745.89 Td
+(stayed on, producing zigzag lines.) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+313.00 767.89 Td
+(railgui25.py) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 767.89 Td
+(Removed fb0/blank sysfs calls.) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 756.89 Td
+(Implemented #000000 black overlay) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+418.00 745.89 Td
+(& paused timers. 0 zigzag lines.) Tj
+ET
+q
+0.5 w
+0.082 0.396 0.753 rg
+42.00 702.89 4.00 18.00 re
+f
+Q
+BT
+/F2 15 Tf
+0.051 0.278 0.631 rg
+54.00 704.89 Td
+(3. Sensor Assessment: Polling vs. Hardware Interrupts) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 684.89 Td
+(An industrial embedded architecture must select the appropriate capture method based on the physical layer and) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 671.89 Td
+(electrical characteristics of each sensor:) Tj
+ET
+q
+0.5 w
+0.059 0.090 0.165 rg
+42.00 431.39 511.28 234.50 re
+f
+Q
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 649.89 Td
+(+----------------------------------------------------------------------------------------------------+) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 638.39 Td
+(|                                    BEAGLEBONE BLACK INDUSTRIAL                                     |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 626.89 Td
+(|                                                                                                    |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 615.39 Td
+(|   +------------------------------------+          +--------------------------------------------+   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 603.89 Td
+(|   |          TIMED POLLING             |          |             HARDWARE INTERRUPTS            |   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 592.39 Td
+(|   |                                    |          |                                            |   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 580.89 Td
+(|   | 1. Laser Track Gauge \(ADC AIN0\)    |          | 1. Rotary Encoder \(PRU1 200 MHz Co-Proc\)   |   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 569.39 Td
+(|   |    - Continuous DC Analog Voltage  |          |    - Digital square wave edges \(Ch A / B\)  |   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 557.89 Td
+(|   |    - Read at 10 Hz \(Paced Sysfs\)   |          |    - PRU1: 1 MHz oversample \(0% ARM CPU\)   |   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 546.39 Td
+(|   |                                    |          |                                            |   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 534.89 Td
+(|   | 2. Murata SCL3300 Inclinometer     |          | 2. WaveShare USB Touchscreen               |   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 523.39 Td
+(|   |    - Synchronous SPI1 bus master   |          |    - USB HID endpoint interrupt packets    |   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 511.89 Td
+(|   |    - Read at 10 Hz \(SPI ioctl\)     |          |    - Event-driven \(0% CPU when untouched\)  |   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 500.39 Td
+(|   |                                    |          |                                            |   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 488.89 Td
+(|   | 3. POSIX Shared Memory Reader      |          | 3. Daly BMS & GPS UART RX Buffers          |   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 477.39 Td
+(|   |    - Python GUI reads at 10 Hz     |          |    - Hardware UART triggers Linux tty IRQ  |   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 465.89 Td
+(|   |    - Non-blocking lockless memcpy  |          |    - Driver buffers bytes in kernel FIFO   |   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 454.39 Td
+(|   +------------------------------------+          +--------------------------------------------+   |) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 442.89 Td
+(+----------------------------------------------------------------------------------------------------+) Tj
+ET
+BT
+/F2 12 Tf
+0.118 0.161 0.231 rg
+42.00 399.39 Td
+(3.1 Laser Track Gauge \(Panasonic HG-C1200 on ADC AIN0 / P9_39\)) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 383.39 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 383.39 Td
+(Capture Architecture: Timed Polling at 10 Hz via Linux IIO Sysfs.) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 369.39 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 369.39 Td
+(Can it be made an interrupt? NO. It is physically impossible.) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 355.39 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 355.39 Td
+(Reason 1 \(Continuous DC Signal\): Sensor outputs continuous analog DC voltage \(0-5V, attenuated to 0-1.8V\). Analog) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 343.39 Td
+(signals have no clock edges, pulses, or interrupt lines.) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 329.39 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 329.39 Td
+(Reason 2 \(No Hardware Comparator\): AM335x SAR ADC has no threshold-crossing window interrupt exposed to Linux IIO) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 317.39 Td
+(subsystem.) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 303.39 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 303.39 Td
+(Reason 3 \(Stationary Display & Calibration\): If conversion were gated only by wheel distance \(0.25m\), the display would) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 291.39 Td
+(freeze whenever the trolley halts, making sensor calibration on a test stand completely impossible.) Tj
+ET
+BT
+/F2 12 Tf
+0.118 0.161 0.231 rg
+42.00 267.39 Td
+(3.2 Cross-Level Inclinometer \(Murata SCL3300-D01 on SPI1\)) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 251.39 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 251.39 Td
+(Capture Architecture: Timed Polling at 10 Hz via /dev/spidev1.0.) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 237.39 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 237.39 Td
+(Can it be made an interrupt? NO. It is physically impossible on the current PCB.) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 223.39 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 223.39 Td
+(Reason 1 \(SPI Master-Slave\): SPI is a master-driven synchronous bus. The slave sensor cannot initiate bus activity; the) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 211.39 Td
+(BeagleBone must assert CS and clock SCK.) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 197.39 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 197.39 Td
+(Reason 2 \(Missing PCB Hardware Trace\): Murata SCL3300 IC has an optional DRDY pin, but your trolley PCB does NOT) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 185.39 Td
+(route DRDY to any BeagleBone GPIO. Only the 4 SPI lines are connected.) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 171.39 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 171.39 Td
+(Reason 3 \(Ultra-Low Overhead\): Single SPI transfer takes 45us. Reading at 10 Hz consumes less than 0.6% CPU.) Tj
+ET
+BT
+/F2 12 Tf
+0.118 0.161 0.231 rg
+42.00 147.39 Td
+(3.3 Rotary Wheel Encoder \(Omron / Autonics Quadrature\)) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 131.39 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 131.39 Td
+(Capture Architecture: Hardware Interrupts \(Fallback\) & PRU1 Co-Processor Oversampling \(Primary\).) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 117.39 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 117.39 Td
+(Can it be an interrupt? YES, and it is fully implemented.) Tj
+ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Contents 12 0 R /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R >> >> >>
+endobj
+12 0 obj
+<< /Length 8841 >>
+stream
+q
+0.5 w
+0.8 0.85 0.9 RG
+42 803.89 m 553.28 803.89 l S
+Q
+BT
+/F2 7.5 Tf
+0.08 0.28 0.50 rg
+42 809.89 Td
+(LWTMT TECHNICAL ARCHITECTURE & ENGINEERING REPORT) Tj
+ET
+BT
+/F1 7.5 Tf
+0.4 0.45 0.55 rg
+443.28 809.89 Td
+(LWTMT/ENG/RCA-INT/2026/02) Tj
+ET
+q
+0.5 w
+0.8 0.85 0.9 RG
+42 42 m 553.28 42 l S
+Q
+BT
+/F1 7.5 Tf
+0.4 0.45 0.55 rg
+42 30 Td
+(Light Weight Track Measuring Trolley -- Technical Architecture Report) Tj
+ET
+BT
+/F2 7.5 Tf
+0.08 0.28 0.50 rg
+478.28 30 Td
+(Page 3 of 3) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 769.89 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 769.89 Td
+(Co-Processor Implementation: 200 MHz PRU1 co-processor oversamples GPIO registers at 1 MHz with 3-sample digital EMI) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 757.89 Td
+(filter. Zero Linux CPU interrupts; 0% ARM overhead.) Tj
+ET
+q
+0.5 w
+0.082 0.396 0.753 rg
+42.00 727.89 4.00 18.00 re
+f
+Q
+BT
+/F2 15 Tf
+0.051 0.278 0.631 rg
+54.00 729.89 Td
+(4. Decoupled POSIX Shared Memory Pipeline) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 709.89 Td
+(Real-time physical acquisition is completely decoupled from Qt graphical display rendering via RAM-backed POSIX) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 696.89 Td
+(Shared Memory \(/dev/shm/rail_sensor_shm\):) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 678.89 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 678.89 Td
+(Tier 1 \(C Sensor Core\): sensor_service runs at nice -5, writing 64-byte binary telemetry frames atomically.) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 664.89 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 664.89 Td
+(Tier 2 \(Shared Memory\): Zero-copy, mutex-free RAM buffer. Read operations complete in under 200 nanoseconds.) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 650.89 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 650.89 Td
+(Tier 3 \(Touchscreen GUI & Logger\): Python/Qt polls SHM at 10 Hz. Even if GUI stalls during a heavy dialog, the C sensor) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 638.89 Td
+(core never drops a single wheel pulse.) Tj
+ET
+q
+0.5 w
+0.082 0.396 0.753 rg
+42.00 608.89 4.00 18.00 re
+f
+Q
+BT
+/F2 15 Tf
+0.051 0.278 0.631 rg
+54.00 610.89 Td
+(5. Component Summary Comparison Matrix) Tj
+ET
+q
+0.5 w
+0.051 0.278 0.631 rg
+42.00 580.89 511.28 22.00 re
+f
+Q
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+48.00 586.89 Td
+(Component) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+143.00 586.89 Td
+(Interface) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+228.00 586.89 Td
+(Capture Mode) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+323.00 586.89 Td
+(Interrupt?) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+378.00 586.89 Td
+(Primary Engineering Justification) Tj
+ET
+q
+0.4 w
+0.973 0.980 0.988 rg
+0.886 0.910 0.941 RG
+42.00 537.89 511.28 41.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 566.89 Td
+(Laser Gauge) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+143.00 566.89 Td
+(ADC AIN0 \(0-1.8V\)) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+228.00 566.89 Td
+(Timed Polling \(10 Hz\)) Tj
+ET
+BT
+/F1 8.2 Tf
+0.600 0.106 0.106 rg
+323.00 566.89 Td
+(NO) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 566.89 Td
+(Continuous analog DC voltage signal; no digital) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 555.89 Td
+(clock or IRQ line. Distance-only triggering) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 544.89 Td
+(freezes stationary display.) Tj
+ET
+q
+0.4 w
+1.000 1.000 1.000 rg
+0.886 0.910 0.941 RG
+42.00 496.89 511.28 41.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 525.89 Td
+(Inclinometer) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+143.00 525.89 Td
+(SPI1 \(P9_28-31\)) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+228.00 525.89 Td
+(Timed Polling \(10 Hz\)) Tj
+ET
+BT
+/F1 8.2 Tf
+0.600 0.106 0.106 rg
+323.00 525.89 Td
+(NO) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 525.89 Td
+(Master-slave SPI protocol; no DRDY interrupt) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 514.89 Td
+(pin is routed on the PCB. Polling takes 45us) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 503.89 Td
+(and 0.6% CPU.) Tj
+ET
+q
+0.4 w
+0.973 0.980 0.988 rg
+0.886 0.910 0.941 RG
+42.00 455.89 511.28 41.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 484.89 Td
+(Rotary Encoder) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+143.00 484.89 Td
+(GPIO \(P8_12/15\)) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+228.00 484.89 Td
+(PRU1 Oversampling) Tj
+ET
+BT
+/F1 8.2 Tf
+0.086 0.396 0.204 rg
+323.00 484.89 Td
+(YES) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 484.89 Td
+(Digital square waves; processed by dedicated) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 473.89 Td
+(200 MHz PRU1 co-processor with 0% main) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 462.89 Td
+(ARM CPU load.) Tj
+ET
+q
+0.4 w
+1.000 1.000 1.000 rg
+0.886 0.910 0.941 RG
+42.00 425.89 511.28 30.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 443.89 Td
+(USB Touchscreen) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+143.00 443.89 Td
+(USB HID \(event1\)) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+228.00 443.89 Td
+(Hardware Interrupt) Tj
+ET
+BT
+/F1 8.2 Tf
+0.086 0.396 0.204 rg
+323.00 443.89 Td
+(YES) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 443.89 Td
+(USB endpoint interrupts trigger event-driven) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 432.89 Td
+(kernel reads; 0% CPU when untouched.) Tj
+ET
+q
+0.4 w
+0.973 0.980 0.988 rg
+0.886 0.910 0.941 RG
+42.00 395.89 511.28 30.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 413.89 Td
+(Daly Smart BMS) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+143.00 413.89 Td
+(UART5 \(9600 baud\)) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+228.00 413.89 Td
+(Paced Polling \(0.5 Hz\)) Tj
+ET
+BT
+/F1 8.2 Tf
+0.600 0.106 0.106 rg
+323.00 413.89 Td
+(NO) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 413.89 Td
+(Master-slave query-response protocol; BMS) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 402.89 Td
+(requires explicit query commands.) Tj
+ET
+q
+0.4 w
+1.000 1.000 1.000 rg
+0.886 0.910 0.941 RG
+42.00 365.89 511.28 30.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 383.89 Td
+(POSIX SHM) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+143.00 383.89 Td
+(/dev/shm tmpfs) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+228.00 383.89 Td
+(Paced Polling \(10 Hz\)) Tj
+ET
+BT
+/F1 8.2 Tf
+0.600 0.106 0.106 rg
+323.00 383.89 Td
+(NO) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 383.89 Td
+(Decouples GUI rendering from sensor daemon;) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 372.89 Td
+(lockless atomic memcpy takes < 200 ns.) Tj
+ET
+q
+0.4 w
+0.973 0.980 0.988 rg
+0.886 0.910 0.941 RG
+42.00 324.89 511.28 41.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 353.89 Td
+(RDSO Survey Log) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+143.00 353.89 Td
+(Wheel Distance) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+228.00 353.89 Td
+(0.25m Distance Gated) Tj
+ET
+BT
+/F1 8.2 Tf
+0.086 0.396 0.204 rg
+323.00 353.89 Td
+(YES) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 353.89 Td
+(Triggered strictly upon physical wheel) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 342.89 Td
+(advancement; zero duplicate rows logged) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+378.00 331.89 Td
+(during stops.) Tj
+ET
+q
+0.5 w
+0.082 0.396 0.753 rg
+42.00 288.89 4.00 18.00 re
+f
+Q
+BT
+/F2 15 Tf
+0.051 0.278 0.631 rg
+54.00 290.89 Td
+(6. Conclusion & Verification Sign-Off) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 270.89 Td
+(1. Display Freezes Eliminated: Resolved by removing software Gaussian drop-shadows, normalizing thread priority to) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 257.89 Td
+(SCHED_OTHER, pacing ADC sysfs polling to 10 Hz, executing USB exports in background threads, grounding motion) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 244.89 Td
+(detection on physical wheel rotation, and eliminating fb0/blank HDMI sync loss.) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 226.89 Td
+(2. Sensor Polling Justified: Paced 10 Hz polling for the Laser Gauge and Inclinometer is the only physically viable) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 213.89 Td
+(engineering architecture given the continuous analog nature of the laser sensor and the 4-wire SPI connection of the) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 200.89 Td
+(inclinometer. It consumes only 1.6% CPU and ensures live calibration and display feedback when stationary.) Tj
+ET
+q
+0.5 w
+0.973 0.980 0.988 rg
+0.796 0.835 0.882 RG
+42.00 122.89 245.64 55.00 re
+B
+Q
+q
+0.8 w
+0.580 0.639 0.722 RG
+54.00 152.89 m 275.64 152.89 l S
+Q
+BT
+/F2 8.5 Tf
+0.059 0.090 0.165 rg
+54.00 141.89 Td
+(Prepared By:) Tj
+ET
+BT
+/F1 8 Tf
+0.278 0.333 0.412 rg
+54.00 131.89 Td
+(Embedded Systems & Track Instrumentation Lead) Tj
+ET
+q
+0.5 w
+0.973 0.980 0.988 rg
+0.796 0.835 0.882 RG
+307.64 122.89 245.64 55.00 re
+B
+Q
+q
+0.8 w
+0.580 0.639 0.722 RG
+319.64 152.89 m 541.28 152.89 l S
+Q
+BT
+/F2 8.5 Tf
+0.059 0.090 0.165 rg
+319.64 141.89 Td
+(Verified & Approved By:) Tj
+ET
+BT
+/F1 8 Tf
+0.278 0.333 0.412 rg
+319.64 131.89 Td
+(Director of Quality Assurance & Railway Systems) Tj
+ET
+endstream
+endobj
+xref
+0 14
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000130 00000 n 
+0000000200 00000 n 
+0000000275 00000 n 
+0000000343 00000 n 
+0000000416 00000 n 
+0000000578 00000 n 
+0000010036 00000 n 
+0000010199 00000 n 
+0000018611 00000 n 
+0000018775 00000 n 
+trailer
+<< /Size 14 /Root 1 0 R >>
+startxref
+27669
+%%EOF

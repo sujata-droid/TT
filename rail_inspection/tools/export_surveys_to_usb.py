@@ -159,7 +159,50 @@ def _is_sensor_out_of_limit(header_name, value, limits_cfg=None):
     return False
 
 
-def _generate_unencrypted_xlsx_bytes(csv_file):
+def _filter_rows_by_interval(rows, interval_m, limits=None):
+    """Filter survey rows to the user-chosen reporting interval (RDSO Clause 3.14).
+
+    Always includes:
+    1. First sample (start chainage).
+    2. Samples where distance advances by multiples of interval_m.
+    3. Peak defect rows where any parameter exceeds permissible limits (RDSO Clause 3.20).
+    """
+    if not interval_m or interval_m <= 0:
+        return rows
+    filtered = []
+    last_d = None
+    for row in rows:
+        d_val = None
+        for key in ("Distance", "Chainage", "dist"):
+            v = row.get(key, "")
+            try:
+                d_val = float(v)
+                break
+            except (ValueError, TypeError):
+                continue
+        if d_val is None:
+            filtered.append(row)
+            continue
+        if last_d is None:
+            filtered.append(row)
+            last_d = d_val
+            continue
+
+        is_defect = False
+        if limits:
+            for k, val in row.items():
+                if _is_sensor_out_of_limit(k, val, limits):
+                    is_defect = True
+                    break
+
+        if is_defect or abs(d_val - last_d) >= (interval_m - 0.01):
+            filtered.append(row)
+            if not is_defect or abs(d_val - last_d) >= (interval_m - 0.01):
+                last_d = d_val
+    return filtered
+
+
+def _generate_unencrypted_xlsx_bytes(csv_file, interval_m=None):
     """Generate in-memory .xlsx ZIP package with styling and limits."""
     try:
         cfg_path = Path(__file__).resolve().parents[1] / "rail_config.json"
@@ -172,6 +215,8 @@ def _generate_unencrypted_xlsx_bytes(csv_file):
     reader = csv.DictReader(io.StringIO(raw_text, newline=""))
     headers = [h for h in (reader.fieldnames or []) if h is not None]
     rows = list(reader)
+    if interval_m is not None and interval_m > 0:
+        rows = _filter_rows_by_interval(rows, interval_m, limits)
 
     if not headers:
         raise ValueError(f"CSV file '{csv_file.name}' has no columns or data")
@@ -332,10 +377,27 @@ def _build_encrypted_zip_bytes(entries, password, mod_dt=None):
     return bytes(file_blobs) + cd_data + eocd
 
 
-def _zip_copy(csv_file, destination, password=DEFAULT_EXPORT_PASSWORD):
+def _zip_copy(csv_file, destination, password=DEFAULT_EXPORT_PASSWORD, interval_m=None):
     """Create one password-protected .zip containing plain .csv and styled .xlsx."""
-    plain_xlsx_bytes = _generate_unencrypted_xlsx_bytes(csv_file)
-    raw_csv_bytes = csv_file.read_bytes()
+    plain_xlsx_bytes = _generate_unencrypted_xlsx_bytes(csv_file, interval_m=interval_m)
+    if interval_m is not None and interval_m > 0:
+        raw_text = csv_file.read_bytes().replace(b"\x00", b"").decode("utf-8-sig", errors="replace")
+        reader = csv.DictReader(io.StringIO(raw_text, newline=""))
+        headers = [h for h in (reader.fieldnames or []) if h is not None]
+        rows = list(reader)
+        try:
+            cfg_path = Path(__file__).resolve().parents[1] / "rail_config.json"
+            cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+        except Exception:
+            cfg = {}
+        filtered_rows = _filter_rows_by_interval(rows, interval_m, cfg.get("permissible_limits", {}))
+        out_buf = io.StringIO()
+        writer = csv.DictWriter(out_buf, fieldnames=headers)
+        writer.writeheader()
+        writer.writerows(filtered_rows)
+        raw_csv_bytes = out_buf.getvalue().encode("utf-8")
+    else:
+        raw_csv_bytes = csv_file.read_bytes()
 
     csv_arcname = f"{csv_file.stem}.csv"
     xlsx_arcname = f"{csv_file.stem}.xlsx"
@@ -368,10 +430,10 @@ def _zip_copy(csv_file, destination, password=DEFAULT_EXPORT_PASSWORD):
     return output
 
 
-def _excel_copy(csv_file, destination, password=DEFAULT_EXPORT_PASSWORD):
+def _excel_copy(csv_file, destination, password=DEFAULT_EXPORT_PASSWORD, interval_m=None):
     """Create a password-protected .xlsx file with specified password."""
     output = destination / f"{csv_file.stem}.xlsx"
-    plain_bytes = _generate_unencrypted_xlsx_bytes(csv_file)
+    plain_bytes = _generate_unencrypted_xlsx_bytes(csv_file, interval_m=interval_m)
     encrypted_bytes = encrypt_excel_workbook(plain_xlsx_bytes=plain_bytes, password=password)
 
     with open(output, "wb") as f:
@@ -455,6 +517,8 @@ def main():
                         help="copy one selected completed CSV file (may be repeated)")
     parser.add_argument("--password", default=DEFAULT_EXPORT_PASSWORD,
                         help=f"password for exported ZIP and Excel files (default: {DEFAULT_EXPORT_PASSWORD})")
+    parser.add_argument("--interval", type=float, default=None,
+                        help="reporting/exporting interval in meters (e.g. 0.25, 0.50, 1.00; RDSO Cl. 3.14)")
     parser.add_argument("--dest", type=Path,
                         help="optional destination directory instead of auto-detected USB mount")
     args = parser.parse_args()
@@ -492,15 +556,26 @@ def main():
     for subdir in survey_root.iterdir():
         if subdir.is_dir():
             _cleanup_legacy_files(subdir)
-    _cleanup_legacy_files(destination)
+        _cleanup_legacy_files(destination)
 
     export_count = 0
     export_pwd = args.password or DEFAULT_EXPORT_PASSWORD
+    export_interval = args.interval
+    if export_interval is None:
+        try:
+            cfg_path = Path(__file__).resolve().parents[1] / "rail_config.json"
+            if cfg_path.exists():
+                cfg_obj = json.loads(cfg_path.read_text())
+                raw_interval = cfg_obj.get("reporting_interval_m", None)
+                if raw_interval is not None:
+                    export_interval = float(raw_interval)
+        except Exception:
+            export_interval = None
 
     for csv_file in csvs:
         # Save ONLY ONE FILE per survey: {csv_file.stem}.zip (containing .csv + protected .xlsx)
         try:
-            _zip_copy(csv_file, destination, password=export_pwd)
+            _zip_copy(csv_file, destination, password=export_pwd, interval_m=export_interval)
         except Exception as e:
             print(f"ERROR: failed to create password-protected ZIP for {csv_file.name}: {e}", file=sys.stderr)
             return 6

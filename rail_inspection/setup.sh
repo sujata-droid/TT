@@ -114,8 +114,18 @@ cd ..
 
 # â”€â”€ 4. Build PRU firmware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo ""
-echo "[4/7] Skipping PRU firmware build..."
-warn "Minimal encoder testing is using eQEP2, not the PRU path."
+echo "[4/7] Configuring PRU1 early module load and firmware..."
+cat >/etc/modules-load.d/rail-pru.conf <<'EOF'
+pruss_soc_bus
+pru_rproc
+EOF
+modprobe pruss_soc_bus 2>/dev/null || true
+modprobe pru_rproc 2>/dev/null || true
+if [ -f "$PROJECT_DIR/setup_encoder_pru.sh" ] && { [ -s "$PROJECT_DIR/pru/encoder_pru1.out" ] || command -v clpru >/dev/null 2>&1; }; then
+    bash "$PROJECT_DIR/setup_encoder_pru.sh" && ok "PRU1 firmware built and started" || warn "PRU1 setup failed (GPIO fallback remains active)"
+else
+    warn "clpru and prebuilt encoder_pru1.out not found; skipping PRU1 setup"
+fi
 
 # â”€â”€ 5. Load PRU firmware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo ""

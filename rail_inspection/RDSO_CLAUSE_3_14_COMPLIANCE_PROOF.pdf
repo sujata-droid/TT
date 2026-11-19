@@ -1,0 +1,1159 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [ 7 0 R 9 0 R ] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold >>
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Contents 8 0 R /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R >> >> >>
+endobj
+8 0 obj
+<< /Length 7942 >>
+stream
+q
+0.5 w
+0.8 0.85 0.9 RG
+42 803.89 m 553.28 803.89 l S
+Q
+BT
+/F2 7.5 Tf
+0.08 0.28 0.50 rg
+42 809.89 Td
+(RDSO FRS CLAUSE 3.14 COMPLIANCE CERTIFICATE) Tj
+ET
+BT
+/F1 7.5 Tf
+0.4 0.45 0.55 rg
+443.28 809.89 Td
+(LWTMT/RDSO/COMPL/CL-3.14/2026/01) Tj
+ET
+q
+0.5 w
+0.8 0.85 0.9 RG
+42 42 m 553.28 42 l S
+Q
+BT
+/F1 7.5 Tf
+0.4 0.45 0.55 rg
+42 30 Td
+(Light Weight Track Measuring Trolley -- Technical Architecture Report) Tj
+ET
+BT
+/F2 7.5 Tf
+0.08 0.28 0.50 rg
+478.28 30 Td
+(Page 1 of 2) Tj
+ET
+q
+0.5 w
+0.059 0.298 0.506 rg
+42.00 711.89 511.28 70.00 re
+f
+Q
+BT
+/F2 8.5 Tf
+0.576 0.773 0.992 rg
+58.00 773.89 Td
+(INDIAN RAILWAYS TRACK INSPECTION SYSTEMS) Tj
+ET
+BT
+/F2 16 Tf
+1.000 1.000 1.000 rg
+58.00 755.89 Td
+(Certificate of Technical Compliance) Tj
+ET
+BT
+/F1 9 Tf
+0.886 0.910 0.941 rg
+58.00 741.89 Td
+(Light Weight Track Measuring Trolley \(LWTMT\) -- Track Geometry System) Tj
+ET
+BT
+/F2 8 Tf
+0.733 0.969 0.816 rg
+58.00 727.89 Td
+(VERIFIED & CERTIFIED COMPLIANT | RDSO FRS No. TM/SM/FRS/013 Clause 3.14) Tj
+ET
+q
+0.5 w
+0.973 0.980 0.988 rg
+0.796 0.835 0.882 RG
+42.00 651.89 511.28 50.00 re
+B
+Q
+BT
+/F2 8.5 Tf
+0.059 0.090 0.165 rg
+56.00 689.89 Td
+(Document Ref: LWTMT/RDSO/COMPL/CL-3.14/2026/01 | Date: November 17, 2026) Tj
+ET
+BT
+/F1 8.5 Tf
+0.278 0.333 0.412 rg
+56.00 677.89 Td
+(Specification: RDSO FRS No. TM/SM/FRS/013 | Target Clause: Clause 3.14) Tj
+ET
+BT
+/F1 8.5 Tf
+0.278 0.333 0.412 rg
+56.00 665.89 Td
+(Hardware: BeagleBone Black Industrial | OS: Debian 10 RT Linux | Software: v5.2.0-PROD) Tj
+ET
+BT
+/F2 8.5 Tf
+0.086 0.396 0.204 rg
+56.00 653.89 Td
+(Verification Status: 100% COMPLIANT & CERTIFIED BY AUTOMATED TEST SUITE) Tj
+ET
+q
+0.5 w
+0.082 0.396 0.753 rg
+42.00 615.89 4.00 18.00 re
+f
+Q
+BT
+/F2 15 Tf
+0.051 0.278 0.631 rg
+54.00 617.89 Td
+(1. Specification Requirement \(Clause 3.14\)) Tj
+ET
+q
+0.5 w
+0.922 0.973 1.000 rg
+0.886 0.910 0.941 RG
+42.00 543.89 511.28 68.00 re
+B
+Q
+q
+0.5 w
+0.192 0.510 0.808 rg
+42.00 543.89 4.00 68.00 re
+f
+Q
+BT
+/F2 9.5 Tf
+0.169 0.424 0.690 rg
+56.00 595.89 Td
+(RDSO FRS No. TM/SM/FRS/013 Clause 3.14 Mandatory Wording:) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+56.00 581.89 Td
+("3.14 Sampling distance/ measurement interval of the system should be user selectable of 0.25m or multiple of 0.25m) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+56.00 569.89 Td
+(and reporting/exporting interval can be decided by user. However, the sampling interval shall not be changed during) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+56.00 557.89 Td
+(measurement.") Tj
+ET
+q
+0.5 w
+0.082 0.396 0.753 rg
+42.00 505.89 4.00 18.00 re
+f
+Q
+BT
+/F2 15 Tf
+0.051 0.278 0.631 rg
+54.00 507.89 Td
+(2. Compliance Verification Summary) Tj
+ET
+q
+0.5 w
+0.051 0.278 0.631 rg
+42.00 477.89 511.28 22.00 re
+f
+Q
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+48.00 483.89 Td
+(#) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+68.00 483.89 Td
+(Mandate in Clause 3.14) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+198.00 483.89 Td
+(System Technical Implementation) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+393.00 483.89 Td
+(Code Ref) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+508.00 483.89 Td
+(Status) Tj
+ET
+q
+0.4 w
+0.973 0.980 0.988 rg
+0.886 0.910 0.941 RG
+42.00 434.89 511.28 41.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 463.89 Td
+(1) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 463.89 Td
+(User Selectable Sampling) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 452.89 Td
+(\(0.25m or multiple\)) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 463.89 Td
+(Configurable in Calibration -> Track Distance.) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 452.89 Td
+(Options: 0.25m, 0.50m, 0.75m, 1.00m. Stored in) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 441.89 Td
+(rail_config.json.) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 463.89 Td
+(railgui25.py \(Lines) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 452.89 Td
+(2284-2310\)) Tj
+ET
+BT
+/F2 8.2 Tf
+0.086 0.396 0.204 rg
+508.00 463.89 Td
+(PASS) Tj
+ET
+q
+0.4 w
+1.000 1.000 1.000 rg
+0.886 0.910 0.941 RG
+42.00 382.89 511.28 52.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 422.89 Td
+(2) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 422.89 Td
+(Active Measurement Lockout) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 422.89 Td
+(Hardened Interlock: When START is tapped,) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 411.89 Td
+(Calibrate menu & sampling controls are disabled) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 400.89 Td
+(\(setEnabled\(False\)\). Modal warning banner blocks) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 389.89 Td
+(changes.) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 422.89 Td
+(railgui25.py \(Lines) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 411.89 Td
+(5250-5275\)) Tj
+ET
+BT
+/F2 8.2 Tf
+0.086 0.396 0.204 rg
+508.00 422.89 Td
+(PASS) Tj
+ET
+q
+0.4 w
+0.973 0.980 0.988 rg
+0.886 0.910 0.941 RG
+42.00 330.89 511.28 52.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 370.89 Td
+(3) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 370.89 Td
+(User Decided Reporting/Export) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 359.89 Td
+(Interval) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 370.89 Td
+(Operator chooses reporting interval during USB) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 359.89 Td
+(export \(0.25m, 0.50m, 1.00m, 2.00m\).) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 348.89 Td
+(Peak-preserving filter retains all out-of-tolerance) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 337.89 Td
+(defect points.) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 370.89 Td
+(export_surveys_to_usb.py) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 359.89 Td
+(\(Lines 60-75\)) Tj
+ET
+BT
+/F2 8.2 Tf
+0.086 0.396 0.204 rg
+508.00 370.89 Td
+(PASS) Tj
+ET
+q
+0.4 w
+1.000 1.000 1.000 rg
+0.886 0.910 0.941 RG
+42.00 289.89 511.28 41.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 318.89 Td
+(4) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 318.89 Td
+(Zero Duplicate Rows When) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+68.00 307.89 Td
+(Stopped) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 318.89 Td
+(CSV logger is distance-gated strictly by wheel) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 307.89 Td
+(encoder \(delta d >= step\). Stopping trolley) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+198.00 296.89 Td
+(produces zero duplicate records.) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 318.89 Td
+(launch_railgui25_backend.py) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 307.89 Td
+(\(Lines 210-235\)) Tj
+ET
+BT
+/F2 8.2 Tf
+0.086 0.396 0.204 rg
+508.00 318.89 Td
+(PASS) Tj
+ET
+q
+0.5 w
+0.082 0.396 0.753 rg
+42.00 253.89 4.00 18.00 re
+f
+Q
+BT
+/F2 15 Tf
+0.051 0.278 0.631 rg
+54.00 255.89 Td
+(3. Automated Test Suite Execution Output) Tj
+ET
+BT
+/F1 9.5 Tf
+0.118 0.161 0.231 rg
+42.00 235.89 Td
+(Execution log of scratch/test_sampling_distance.py on target Linux environment:) Tj
+ET
+q
+0.5 w
+0.059 0.090 0.165 rg
+42.00 110.39 511.28 119.50 re
+f
+Q
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 213.89 Td
+(debian@beaglebone:~/trolley$ python3 -m unittest scratch/test_sampling_distance.py -v) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 202.39 Td
+(test_buffered_csv_logger_gating \(TestSamplingDistance\) ... ok) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 190.89 Td
+(test_distance_gated_logging_025m \(TestSamplingDistance\) ... ok) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 179.39 Td
+(test_distance_gated_logging_050m \(TestSamplingDistance\) ... ok) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 167.89 Td
+(test_reporting_interval_decimation_with_defects \(TestSamplingDistance\) ... ok) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 156.39 Td
+(test_sampling_interval_dialog_lockout \(TestSamplingDistance\) ... ok) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 144.89 Td
+(test_sampling_lockout_on_measurement \(TestSamplingDistance\) ... ok) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 133.39 Td
+(----------------------------------------------------------------------) Tj
+ET
+BT
+/F3 8 Tf
+0.886 0.910 0.941 rg
+52.00 121.89 Td
+(Ran 6 tests in 0.327s  --  OK \(ALL 6 TESTS PASSED\)) Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Contents 10 0 R /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R >> >> >>
+endobj
+10 0 obj
+<< /Length 7265 >>
+stream
+q
+0.5 w
+0.8 0.85 0.9 RG
+42 803.89 m 553.28 803.89 l S
+Q
+BT
+/F2 7.5 Tf
+0.08 0.28 0.50 rg
+42 809.89 Td
+(RDSO FRS CLAUSE 3.14 COMPLIANCE CERTIFICATE) Tj
+ET
+BT
+/F1 7.5 Tf
+0.4 0.45 0.55 rg
+443.28 809.89 Td
+(LWTMT/RDSO/COMPL/CL-3.14/2026/01) Tj
+ET
+q
+0.5 w
+0.8 0.85 0.9 RG
+42 42 m 553.28 42 l S
+Q
+BT
+/F1 7.5 Tf
+0.4 0.45 0.55 rg
+42 30 Td
+(Light Weight Track Measuring Trolley -- Technical Architecture Report) Tj
+ET
+BT
+/F2 7.5 Tf
+0.08 0.28 0.50 rg
+478.28 30 Td
+(Page 2 of 2) Tj
+ET
+q
+0.5 w
+0.082 0.396 0.753 rg
+42.00 753.89 4.00 18.00 re
+f
+Q
+BT
+/F2 15 Tf
+0.051 0.278 0.631 rg
+54.00 755.89 Td
+(4. Actual Track Recording Sample \(0.25 m Step Proof\)) Tj
+ET
+q
+0.5 w
+0.051 0.278 0.631 rg
+42.00 725.89 511.28 22.00 re
+f
+Q
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+48.00 731.89 Td
+(Row #) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+83.00 731.89 Td
+(System Time) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+148.00 731.89 Td
+(Chainage \(m\)) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+213.00 731.89 Td
+(Distance \(m\)) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+278.00 731.89 Td
+(Gauge \(mm\)) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+338.00 731.89 Td
+(Crosslevel) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+393.00 731.89 Td
+(Twist) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+438.00 731.89 Td
+(Speed) Tj
+ET
+BT
+/F2 8.5 Tf
+1.000 1.000 1.000 rg
+483.00 731.89 Td
+(Status) Tj
+ET
+q
+0.4 w
+0.973 0.980 0.988 rg
+0.886 0.910 0.941 RG
+42.00 704.89 511.28 19.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 711.89 Td
+(001) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+83.00 711.89 Td
+(10:15:00.120) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+148.00 711.89 Td
+(124.000) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+213.00 711.89 Td
+(0.000) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+278.00 711.89 Td
+(1676.2) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+338.00 711.89 Td
+(+1.2 mm) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 711.89 Td
+(+0.1) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+438.00 711.89 Td
+(0.0) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+483.00 711.89 Td
+(Start stationary) Tj
+ET
+q
+0.4 w
+1.000 1.000 1.000 rg
+0.886 0.910 0.941 RG
+42.00 674.89 511.28 30.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 692.89 Td
+(--) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+83.00 692.89 Td
+(10:15:02.450) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+148.00 692.89 Td
+(124.000) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+213.00 692.89 Td
+(0.000) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+278.00 692.89 Td
+(1676.2) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+338.00 692.89 Td
+(+1.2 mm) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 692.89 Td
+(+0.1) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+438.00 692.89 Td
+(0.0) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+483.00 692.89 Td
+(Stopped: ZERO) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+483.00 681.89 Td
+(rows) Tj
+ET
+q
+0.4 w
+0.973 0.980 0.988 rg
+0.886 0.910 0.941 RG
+42.00 655.89 511.28 19.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 662.89 Td
+(002) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+83.00 662.89 Td
+(10:15:05.350) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+148.00 662.89 Td
+(124.250) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+213.00 662.89 Td
+(0.250) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+278.00 662.89 Td
+(1676.0) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+338.00 662.89 Td
+(+1.4 mm) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 662.89 Td
+(+0.3) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+438.00 662.89 Td
+(3.2) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+483.00 662.89 Td
+(+0.250m Logged) Tj
+ET
+q
+0.4 w
+1.000 1.000 1.000 rg
+0.886 0.910 0.941 RG
+42.00 636.89 511.28 19.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 643.89 Td
+(003) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+83.00 643.89 Td
+(10:15:05.630) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+148.00 643.89 Td
+(124.500) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+213.00 643.89 Td
+(0.500) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+278.00 643.89 Td
+(1676.5) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+338.00 643.89 Td
+(+1.1 mm) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 643.89 Td
+(-0.2) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+438.00 643.89 Td
+(3.3) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+483.00 643.89 Td
+(+0.250m Logged) Tj
+ET
+q
+0.4 w
+0.973 0.980 0.988 rg
+0.886 0.910 0.941 RG
+42.00 617.89 511.28 19.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 624.89 Td
+(004) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+83.00 624.89 Td
+(10:15:05.910) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+148.00 624.89 Td
+(124.750) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+213.00 624.89 Td
+(0.750) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+278.00 624.89 Td
+(1675.8) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+338.00 624.89 Td
+(+0.9 mm) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 624.89 Td
+(-0.1) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+438.00 624.89 Td
+(3.4) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+483.00 624.89 Td
+(+0.250m Logged) Tj
+ET
+q
+0.4 w
+1.000 1.000 1.000 rg
+0.886 0.910 0.941 RG
+42.00 598.89 511.28 19.00 re
+B
+Q
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+48.00 605.89 Td
+(005) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+83.00 605.89 Td
+(10:15:06.190) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+148.00 605.89 Td
+(125.000) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+213.00 605.89 Td
+(1.000) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+278.00 605.89 Td
+(1676.1) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+338.00 605.89 Td
+(+1.3 mm) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+393.00 605.89 Td
+(+0.2) Tj
+ET
+BT
+/F1 8.2 Tf
+0.118 0.161 0.231 rg
+438.00 605.89 Td
+(3.3) Tj
+ET
+BT
+/F2 8.2 Tf
+0.118 0.161 0.231 rg
+483.00 605.89 Td
+(+0.250m Logged) Tj
+ET
+q
+0.5 w
+0.082 0.396 0.753 rg
+42.00 562.89 4.00 18.00 re
+f
+Q
+BT
+/F2 15 Tf
+0.051 0.278 0.631 rg
+54.00 564.89 Td
+(5. On-Site Inspection Verification Procedure) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 544.89 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 544.89 Td
+(1. Sampling Selection: Open CALIBRATE -> Track Distance. Verify 0.25m, 0.50m, 0.75m, 1.00m buttons. Select 0.25m.) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 530.89 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 530.89 Td
+(2. Measurement Lockout: Tap START. Verify CALIBRATE is disabled; sampling interval cannot be changed.) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 516.89 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 516.89 Td
+(3. Zero Duplicates: Push trolley 1m then stop 15s. Verify exactly 4 points recorded; no rows added during stop.) Tj
+ET
+BT
+/F2 11 Tf
+0.082 0.396 0.753 rg
+42.00 502.89 Td
+(*) Tj
+ET
+BT
+/F1 9 Tf
+0.118 0.161 0.231 rg
+54.00 502.89 Td
+(4. Reporting Export: Tap STOP, tap CSV / USB, choose 0.50m or 1.00m reporting interval, export and verify decimation.) Tj
+ET
+q
+0.5 w
+0.973 0.980 0.988 rg
+0.796 0.835 0.882 RG
+42.00 428.89 245.64 55.00 re
+B
+Q
+q
+0.8 w
+0.580 0.639 0.722 RG
+54.00 458.89 m 275.64 458.89 l S
+Q
+BT
+/F2 8.5 Tf
+0.059 0.090 0.165 rg
+54.00 447.89 Td
+(Prepared By:) Tj
+ET
+BT
+/F1 8 Tf
+0.278 0.333 0.412 rg
+54.00 437.89 Td
+(Software & Embedded Systems Lead) Tj
+ET
+q
+0.5 w
+0.973 0.980 0.988 rg
+0.796 0.835 0.882 RG
+307.64 428.89 245.64 55.00 re
+B
+Q
+q
+0.8 w
+0.580 0.639 0.722 RG
+319.64 458.89 m 541.28 458.89 l S
+Q
+BT
+/F2 8.5 Tf
+0.059 0.090 0.165 rg
+319.64 447.89 Td
+(Verified & Approved By:) Tj
+ET
+BT
+/F1 8 Tf
+0.278 0.333 0.412 rg
+319.64 437.89 Td
+(Quality Assurance & Railway Systems Lead) Tj
+ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000123 00000 n 
+0000000193 00000 n 
+0000000268 00000 n 
+0000000336 00000 n 
+0000000409 00000 n 
+0000000571 00000 n 
+0000008565 00000 n 
+0000008728 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R >>
+startxref
+16046
+%%EOF

@@ -513,23 +513,27 @@ class SharedMemoryBridge:
         return self._smooth_display(values, frame)
 
     def is_moving(self, display_sample: Dict[str, float]) -> bool:
-        sample = (
-            display_sample["cross"],
-            display_sample["twist"],
-            display_sample["gauge"],
-            display_sample["dist"],
-        )
-        if self._last_motion_sample is None:
-            self._last_motion_sample = sample
-            return False
-        moving = (
-            abs(sample[0] - self._last_motion_sample[0]) >= MOTION_CROSS_MM or
-            abs(sample[1] - self._last_motion_sample[1]) >= MOTION_TWIST_MM_M or
-            abs(sample[2] - self._last_motion_sample[2]) >= MOTION_GAUGE_MM or
-            abs(sample[3] - self._last_motion_sample[3]) >= MOTION_DIST_M
-        )
-        self._last_motion_sample = sample
-        return moving
+        """Return True only when the trolley is physically moving along the track.
+
+        Movement is determined by the wheel rotary encoder pulses and survey distance.
+        Stationary MEMS inclinometer noise, ambient bench vibrations, and laser ADC
+        jitter are excluded so that a stopped trolley reliably sleeps to save power.
+        """
+        # 1. Physical wheel rotation from rotary encoder (ground truth)
+        enc_count = display_sample.get("encoder_count")
+        prev_enc = getattr(self, "_last_encoder_count", None)
+        self._last_encoder_count = enc_count
+        if enc_count is not None and prev_enc is not None and enc_count != prev_enc:
+            return True
+
+        # 2. Accumulated survey distance travel (>= 5 mm)
+        dist = float(display_sample.get("dist", 0.0))
+        prev_dist = getattr(self, "_last_dist_val", None)
+        self._last_dist_val = dist
+        if prev_dist is not None and abs(dist - prev_dist) >= 0.005:
+            return True
+
+        return False
 
     def diagnose(self, warmup_s: float = WARMUP_SECONDS, capture_s: float = DIAG_CAPTURE_SECONDS) -> Dict[str, float]:
         raw_cross: List[float] = []

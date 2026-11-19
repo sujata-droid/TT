@@ -1,0 +1,46 @@
+{
+  "csv_dir": "/home/debian/surveys",
+  "hl_sec": 30,
+  "sampling_distance_m": 0.25,
+  "reporting_interval_m": 0.25,
+  "server": "20.8.1.15",
+  "lte_iface": "tap0",
+  "cloud_url": "http://20.8.1.15:5173/api/survey",
+  "calibration_password": "Patil@123",
+  "encoder": {
+    "scale": 0.19634954084936207,
+    "factor": 1.123596,
+    "calibrated": true
+  },
+  "adc": {
+    "zero": 2048,
+    "mpc": 0.0684,
+    "factor": 1.0,
+    "calibrated": false
+  },
+  "incl": {
+    "offset": 7.66,
+    "factor": 1.036,
+    "calibrated": true
+  },
+  "gnss": {
+    "ref_ch": 0.0,
+    "calibrated": false
+  },
+  "permissible_limits": {
+    "track_mode": "straight",
+    "nominal_gauge_mm": 1676.0,
+    "gauge_min_mm": 1670.0,
+    "gauge_max_mm": 1682.0,
+    "gauge_mm": 6.0,
+    "crosslevel_mm": 200.0,
+    "twist_mm_per_m": null,
+    "distance_m": null
+  },
+  "bms": {
+    "type": "daly_uart",
+    "baudrate": 9600,
+    "port": "auto",
+    "low_battery_threshold_pct": 20.0
+  }
+}

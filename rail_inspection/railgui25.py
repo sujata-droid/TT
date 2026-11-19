@@ -15,7 +15,7 @@ Sensor map (PCB connections):
   Display          → HDMI → omapdrm / xrandr
 """
 
-import sys, os, re, json, csv, time, random, subprocess, hmac, math
+import sys, os, re, json, csv, time, random, subprocess, hmac, math, shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -25,9 +25,9 @@ from PyQt5.QtWidgets import (
     QFileDialog, QTextEdit, QSizePolicy, QDialog, QTableWidget,
     QTableWidgetItem, QHeaderView, QComboBox, QLineEdit, QMessageBox, QDateEdit, QCheckBox, QScroller,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QProcess, QPoint, QRect, QSize, QEvent, QDate
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QProcess, QPoint, QRect, QSize, QEvent, QDate, QObject, QPointF
 from PyQt5.QtGui import (
-    QPainter, QColor, QPen, QFont, QBrush, QLinearGradient, QPainterPath,
+    QPainter, QColor, QPen, QFont, QBrush, QLinearGradient, QPainterPath, QPolygonF,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -186,11 +186,11 @@ QPushButton#SB {
 QPushButton#SB:checked { border-color: #1B8A4C88; color: #1B8A4C; }
 
 /* CSV export page: a small, consistent action bar for the touchscreen. */
-QPushButton#CSVBack, QPushButton#CSVRefresh, QPushButton#CSVExport {
+QPushButton#CSVBack, QPushButton#CSVRefresh, QPushButton#CSVExport, QPushButton#CSVDelete {
     border-radius: 8px;
     font-size: 10pt;
     font-weight: bold;
-    padding: 0 14px;
+    padding: 0 12px;
 }
 QPushButton#CSVBack {
     background: #FFFFFF; border: 2px solid #1565C0; color: #1565C0;
@@ -205,6 +205,11 @@ QPushButton#CSVExport {
 }
 QPushButton#CSVExport:pressed { background: #126B39; border-color: #126B39; }
 QPushButton#CSVExport:disabled { background: #AFCDBB; border-color: #AFCDBB; }
+QPushButton#CSVDelete {
+    background: #C62828; border: 2px solid #C62828; color: #FFFFFF;
+}
+QPushButton#CSVDelete:pressed { background: #8E1B1B; border-color: #8E1B1B; }
+QPushButton#CSVDelete:disabled { background: #E5A9A9; border-color: #E5A9A9; }
 QWidget#CSVHeader {
     background: #FFFFFF;
     border-bottom: 1px solid #DDE3EA;
@@ -235,6 +240,8 @@ _ENCODER_SCALE_MM_PER_COUNT = math.pi * _WHEEL_DIAMETER_MM / (_ENCODER_PPR * _EN
 _DEF = {
     "csv_dir":   DEFAULT_CSV_DIR,
     "hl_sec":    30,
+    "sampling_distance_m": 0.25,
+    "reporting_interval_m": 0.25,
     "server":    "8.8.8.8",
     "lte_iface": "usb2",
     "calibration_password": "Patil@123",
@@ -1471,6 +1478,8 @@ class CSVLogger:
         self._rows           = []
         self.path            = ""
         self.count           = 0
+        self.sampling_distance_m = 0.25
+        self._last_logged_dist = None
         self._ref_type       = ""
         self._ref_value      = ""
         self._station        = "BLE"
@@ -1483,7 +1492,10 @@ class CSVLogger:
     def set_station(self, station_name):
         self._station = station_name.strip() if station_name else "UNKNOWN"
 
-    def start(self, directory, hl_sec=30):
+    def start(self, directory, hl_sec=30, sampling_distance_m=None):
+        if sampling_distance_m is not None:
+            self.sampling_distance_m = float(sampling_distance_m)
+        self._last_logged_dist = None
         os.makedirs(directory, exist_ok=True)
         safe_ts  = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"BLE_{safe_ts}.csv"
@@ -1497,6 +1509,26 @@ class CSVLogger:
 
     def write(self, d):
         if not self._w: return
+        raw_dist = d.get("dist", 0.0)
+        try:
+            curr_dist = float(raw_dist)
+        except (ValueError, TypeError):
+            curr_dist = 0.0
+
+        step = max(0.25, getattr(self, "sampling_distance_m", 0.25))
+        # Distance-gated logging per RDSO FRS Clause 3.14:
+        # Sample 1 is logged at survey start. Subsequent samples require
+        # distance to advance by at least step - 0.005 m.
+        if self._last_logged_dist is not None:
+            delta = abs(curr_dist - self._last_logged_dist)
+            if delta < (step - 0.005):
+                return
+            num_steps = max(1, int(round(delta / step)))
+            direction = 1.0 if curr_dist >= self._last_logged_dist else -1.0
+            self._last_logged_dist += direction * num_steps * step
+        else:
+            self._last_logged_dist = curr_dist
+
         cross = d.get("cross", 0)
         station_no = self._station_values.get("Station No", self._station)
         row = {
@@ -1667,10 +1699,713 @@ class GraphCanvas(QWidget):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  TOP BAR
+#  BBB STORAGE MONITOR & WARNING POPUP
 # ═════════════════════════════════════════════════════════════════════════════
+_STORAGE_DEFAULT_WARN_PCT = 80.0
+_STORAGE_DEFAULT_CRIT_PCT = 90.0
+
+
+def _clamp_pct_env(name: str, default: float, low: float, high: float) -> float:
+    """Parse a percentage threshold from an environment variable safely."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        val = float(raw)
+    except ValueError:
+        return default
+    return max(low, min(high, val))
+
+
+def get_bbb_storage_thresholds():
+    """Return ``(warn_pct, crit_pct)`` thresholds for BBB storage popups."""
+    warn_pct = _clamp_pct_env("RAIL_STORAGE_WARN_PCT", _STORAGE_DEFAULT_WARN_PCT, 1.0, 99.0)
+    default_crit = min(98.0, max(warn_pct + 10.0, _STORAGE_DEFAULT_CRIT_PCT))
+    crit_pct = _clamp_pct_env("RAIL_STORAGE_CRIT_PCT", default_crit, warn_pct, 99.5)
+    return warn_pct, crit_pct
+
+
+def _resolve_existing_storage_path(path=None) -> str:
+    """Walk up to the nearest existing directory for filesystem stats."""
+    candidate = os.path.abspath(str(path)) if path else "/"
+    while candidate and not os.path.exists(candidate):
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            break
+        candidate = parent
+    if candidate and os.path.exists(candidate):
+        return candidate
+    return os.path.abspath("/")
+
+
+def get_bbb_storage_usage(path=None):
+    """Return BBB filesystem usage aligned with POSIX ``df`` non-root capacity."""
+    target = _resolve_existing_storage_path(path)
+    try:
+        if hasattr(os, "statvfs"):
+            st = os.statvfs(target)
+            frsize = int(getattr(st, "f_frsize", 0) or getattr(st, "f_bsize", 0) or 1024)
+            total_bytes = int(st.f_blocks) * frsize
+            used_bytes = max(0, int(st.f_blocks) - int(st.f_bfree)) * frsize
+            avail_bytes = max(0, int(st.f_bavail)) * frsize
+            usable_bytes = used_bytes + avail_bytes
+            denom = usable_bytes if usable_bytes > 0 else total_bytes
+        else:
+            usage = shutil.disk_usage(target)
+            total_bytes = int(usage.total)
+            used_bytes = int(usage.used)
+            avail_bytes = int(usage.free)
+            usable_bytes = total_bytes
+            denom = total_bytes
+        used_pct = (used_bytes / float(denom) * 100.0) if denom > 0 else 0.0
+        return {
+            "path": target,
+            "used_pct": round(used_pct, 1),
+            "total_bytes": total_bytes,
+            "used_bytes": used_bytes,
+            "avail_bytes": avail_bytes,
+            "usable_bytes": usable_bytes,
+        }
+    except Exception:
+        return None
+
+
+def _fmt_storage_bytes(num_bytes: int) -> str:
+    """Format byte counts cleanly in KB, MB, or GB for the operator UI."""
+    val = float(max(0, int(num_bytes)))
+    gb = val / (1024.0 ** 3)
+    if gb >= 1.0:
+        return f"{gb:.2f} GB"
+    mb = val / (1024.0 ** 2)
+    if mb >= 1.0:
+        return f"{mb:.1f} MB"
+    kb = val / 1024.0
+    if val > 0:
+        return f"{max(1.0, kb):.0f} KB"
+    return "0 KB"
+
+
+def _storage_alert_tier(used_pct: float, warn_pct: float, crit_pct: float) -> int:
+    """Return 0 (OK), 1 (warning >= warn_pct), or 2 (critical >= crit_pct)."""
+    if used_pct >= crit_pct:
+        return 2
+    if used_pct >= warn_pct:
+        return 1
+    return 0
+
+
+class StorageWarningDialog(QDialog):
+    """Touchscreen warning popup when BBB storage reaches >= 80% capacity."""
+
+    def __init__(
+        self,
+        info: dict,
+        warn_pct: float = _STORAGE_DEFAULT_WARN_PCT,
+        crit_pct: float = _STORAGE_DEFAULT_CRIT_PCT,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.open_csv_requested = False
+        used_pct = float(info.get("used_pct", 0.0))
+        is_crit = used_pct >= crit_pct
+        accent = "#EF5350" if is_crit else "#F59E0B"
+        badge_bg = "#3B151B" if is_crit else "#33240D"
+        title_txt = (
+            f"BBB STORAGE CRITICAL ({used_pct:.0f}% FULL)"
+            if is_crit
+            else f"BBB STORAGE WARNING ({used_pct:.0f}% FULL)"
+        )
+
+        self.setWindowTitle("BBB Storage Warning")
+        self.setModal(True)
+        self.setFixedSize(640, 390)
+        self.setStyleSheet(
+            f"QDialog {{ background:#121824; color:#F1F5F9; border:2px solid {accent}; }}"
+            "QLabel { color:#E2E8F0; background:transparent; border:none; }"
+            "QFrame#StorageCard { background:#1C2333; border:1px solid #2E3F58; border-radius:10px; }"
+            "QFrame#StorageTrack { background:#0F172A; border:1px solid #334155; border-radius:8px; }"
+            "QPushButton { background:#223047; color:#FFFFFF; border:1px solid #3B5278;"
+            " border-radius:8px; font-size:11pt; font-weight:bold; padding:10px 16px; min-height:48px; }"
+            "QPushButton:pressed { background:#1565C0; }"
+            f"QPushButton#OkBtn {{ background:{accent}; color:#111827; border-color:{accent}; }}"
+            "QPushButton#CsvBtn { background:#1565C0; border-color:#42A5F5; }"
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(12)
+
+        hdr = QLabel(title_txt)
+        hdr.setAlignment(Qt.AlignCenter)
+        hdr.setStyleSheet(
+            f"background:{badge_bg}; color:{accent}; border:1px solid {accent};"
+            " border-radius:8px; font-size:15pt; font-weight:bold; padding:10px;"
+        )
+        root.addWidget(hdr)
+
+        msg = QLabel(
+            f"BBB storage has reached {used_pct:.1f}% (threshold: {warn_pct:.0f}% of 100%).\n"
+            "Please increase BBB storage or export and delete old survey files "
+            "before storage runs out."
+        )
+        msg.setWordWrap(True)
+        msg.setStyleSheet("font-size:11.5pt; color:#F8FAFC; padding:2px 4px;")
+        root.addWidget(msg)
+
+        stats_card = QFrame()
+        stats_card.setObjectName("StorageCard")
+        stats_lay = QVBoxLayout(stats_card)
+        stats_lay.setContentsMargins(14, 12, 14, 12)
+        stats_lay.setSpacing(10)
+
+        track = QFrame()
+        track.setObjectName("StorageTrack")
+        track.setFixedHeight(22)
+        track_lay = QHBoxLayout(track)
+        track_lay.setContentsMargins(2, 2, 2, 2)
+        track_lay.setSpacing(0)
+        fill_pct = max(1, min(100, int(round(used_pct))))
+        fill = QFrame()
+        fill.setStyleSheet(f"background:{accent}; border:none; border-radius:6px;")
+        track_lay.addWidget(fill, fill_pct)
+        if fill_pct < 100:
+            rem = QFrame()
+            rem.setStyleSheet("background:transparent; border:none;")
+            track_lay.addWidget(rem, 100 - fill_pct)
+        stats_lay.addWidget(track)
+
+        used_str = _fmt_storage_bytes(info.get("used_bytes", 0))
+        avail_str = _fmt_storage_bytes(info.get("avail_bytes", 0))
+        usable_str = _fmt_storage_bytes(info.get("usable_bytes", info.get("total_bytes", 0)))
+        path_str = str(info.get("path") or "/")
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        for caption, value in (
+            ("USED", f"{used_str} ({used_pct:.1f}%)"),
+            ("FREE / AVAILABLE", avail_str),
+            ("USABLE TOTAL", usable_str),
+        ):
+            col = QVBoxLayout()
+            col.setSpacing(2)
+            c_lbl = QLabel(caption)
+            c_lbl.setStyleSheet("font-size:8.5pt; font-weight:bold; color:#94A3B8;")
+            v_lbl = QLabel(value)
+            v_lbl.setStyleSheet("font-family:'Courier New'; font-size:12pt; font-weight:bold; color:#FFFFFF;")
+            col.addWidget(c_lbl)
+            col.addWidget(v_lbl)
+            row.addLayout(col, 1)
+        stats_lay.addLayout(row)
+
+        path_lbl = QLabel(f"Monitored path: {path_str}")
+        path_lbl.setStyleSheet("font-size:9pt; color:#94A3B8;")
+        stats_lay.addWidget(path_lbl)
+        root.addWidget(stats_card, 1)
+
+        btns = QHBoxLayout()
+        btns.setSpacing(12)
+        csv_btn = QPushButton("OPEN SURVEYS (EXPORT / DELETE)")
+        csv_btn.setObjectName("CsvBtn")
+        csv_btn.clicked.connect(self._open_surveys)
+        ok_btn = QPushButton("OK")
+        ok_btn.setObjectName("OkBtn")
+        ok_btn.clicked.connect(self.accept)
+        btns.addWidget(csv_btn, 1)
+        btns.addWidget(ok_btn, 1)
+        root.addLayout(btns)
+
+    def _open_surveys(self):
+        self.open_csv_requested = True
+        self.accept()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  BATTERY STATUS DIALOG & TOP BAR
+# ═════════════════════════════════════════════════════════════════════════════
+_BATTERY_JSON_PATHS = (
+    os.environ.get("RAIL_BATTERY_JSON", "/tmp/battery_status.json"),
+    "/tmp/battery_status.json",
+)
+_BATTERY_PCT_PATHS = ("/tmp/battery_pct", "/home/debian/trolley/battery_pct.txt")
+_BATTERY_STALE_SECONDS = 180.0
+
+
+def _load_battery_telemetry():
+    """Read normalized battery telemetry published by tools/daly_bms.py."""
+    for path in _BATTERY_JSON_PATHS:
+        if not path:
+            continue
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+    for path in _BATTERY_PCT_PATHS:
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as handle:
+                    digits = "".join(c for c in handle.read().strip() if c.isdigit())
+                if digits:
+                    return {
+                        "connected": True,
+                        "soc_pct": float(max(0, min(100, int(digits)))),
+                        "source": "pct_file",
+                    }
+        except Exception:
+            pass
+    return {"connected": False, "error": "No BMS / Pico data"}
+
+
+class BatteryStatusDialog(QDialog):
+    """Touchscreen modal showing full Daly BMS / Pico battery diagnostics."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Battery & Daly BMS Diagnostics")
+        self.setModal(True)
+        self.setFixedSize(780, 540)
+        self.setStyleSheet(
+            "QDialog { background:#121824; color:#F1F5F9; border:2px solid #2A3A50; }"
+            "QLabel { color:#E2E8F0; background:transparent; border:none; }"
+            "QFrame#BatCard { background:#1C2333; border:1px solid #2E3F58; border-radius:10px; }"
+            "QFrame#BatFault { background:#2A151B; border:1px solid #EF5350; border-radius:10px; }"
+            "QFrame#BatOk { background:#13261F; border:1px solid #2E7D5B; border-radius:10px; }"
+            "QPushButton { background:#223047; color:#FFFFFF; border:1px solid #3B5278;"
+            " border-radius:8px; font-size:11pt; font-weight:bold; padding:8px 16px; min-height:42px; }"
+            "QPushButton:pressed { background:#1565C0; }"
+            "QPushButton#CloseBtn { background:#C62828; border-color:#EF5350; }"
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(10)
+
+        hdr = QHBoxLayout()
+        title = QLabel("DALY BMS BATTERY MONITOR")
+        title.setStyleSheet("font-size:14pt; font-weight:bold; color:#FFFFFF;")
+        self._conn_lbl = QLabel("Checking...")
+        self._conn_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._conn_lbl.setStyleSheet("font-size:10pt; font-weight:bold; color:#94A3B8;")
+        hdr.addWidget(title)
+        hdr.addWidget(self._conn_lbl, 1)
+        root.addLayout(hdr)
+
+        # Top 4 metric cards
+        cards_row = QHBoxLayout()
+        cards_row.setSpacing(10)
+        self._tile_soc = self._make_tile("SOC", "-- %", cards_row)
+        self._tile_volt = self._make_tile("PACK VOLTAGE", "-- V", cards_row)
+        self._tile_curr = self._make_tile("CURRENT", "-- A", cards_row)
+        self._tile_state = self._make_tile("STATE / REMAIN", "--", cards_row)
+        root.addLayout(cards_row)
+
+        # Middle split: Cell Voltages + System / Temps
+        mid = QHBoxLayout()
+        mid.setSpacing(10)
+
+        cells_card = QFrame()
+        cells_card.setObjectName("BatCard")
+        cells_lay = QVBoxLayout(cells_card)
+        cells_lay.setContentsMargins(12, 10, 12, 10)
+        cells_lay.setSpacing(6)
+        self._cells_hdr = QLabel("CELL VOLTAGES (Min / Max / Delta)")
+        self._cells_hdr.setStyleSheet("font-size:10pt; font-weight:bold; color:#93C5FD;")
+        cells_lay.addWidget(self._cells_hdr)
+
+        cells_grid = QGridLayout()
+        cells_grid.setSpacing(6)
+        self._cell_labels = []
+        for idx in range(8):
+            lbl = QLabel(f"C{idx + 1}: --")
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet(
+                "background:#121824; border:1px solid #2A3A50; border-radius:6px;"
+                " padding:6px; font-family:'Courier New'; font-size:10.5pt; font-weight:bold;"
+            )
+            cells_grid.addWidget(lbl, idx // 4, idx % 4)
+            self._cell_labels.append(lbl)
+        cells_lay.addLayout(cells_grid)
+        self._min_max_lbl = QLabel("Min: -- mV | Max: -- mV | Delta: -- mV")
+        self._min_max_lbl.setStyleSheet("font-family:'Courier New'; font-size:10pt; color:#CBD5E1;")
+        cells_lay.addWidget(self._min_max_lbl)
+        mid.addWidget(cells_card, 3)
+
+        sys_card = QFrame()
+        sys_card.setObjectName("BatCard")
+        sys_lay = QVBoxLayout(sys_card)
+        sys_lay.setContentsMargins(12, 10, 12, 10)
+        sys_lay.setSpacing(6)
+        sys_hdr = QLabel("TEMPS & BMS STATUS")
+        sys_hdr.setStyleSheet("font-size:10pt; font-weight:bold; color:#93C5FD;")
+        sys_lay.addWidget(sys_hdr)
+        self._temps_lbl = QLabel("Temps: --")
+        self._temps_lbl.setWordWrap(True)
+        self._temps_lbl.setStyleSheet("font-family:'Courier New'; font-size:10pt;")
+        self._mos_lbl = QLabel("Charge MOS: -- | Discharge MOS: --")
+        self._mos_lbl.setWordWrap(True)
+        self._mos_lbl.setStyleSheet("font-family:'Courier New'; font-size:10pt;")
+        self._meta_lbl = QLabel("Source: --")
+        self._meta_lbl.setWordWrap(True)
+        self._meta_lbl.setStyleSheet("font-family:'Courier New'; font-size:9.5pt; color:#94A3B8;")
+        sys_lay.addWidget(self._temps_lbl)
+        sys_lay.addWidget(self._mos_lbl)
+        sys_lay.addWidget(self._meta_lbl)
+        sys_lay.addStretch(1)
+        mid.addWidget(sys_card, 2)
+
+        root.addLayout(mid)
+
+        # Fault panel
+        self._fault_frame = QFrame()
+        self._fault_frame.setObjectName("BatOk")
+        fault_lay = QVBoxLayout(self._fault_frame)
+        fault_lay.setContentsMargins(12, 8, 12, 8)
+        self._fault_lbl = QLabel("Faults: Checking BMS...")
+        self._fault_lbl.setWordWrap(True)
+        self._fault_lbl.setStyleSheet("font-size:10pt; font-weight:bold;")
+        fault_lay.addWidget(self._fault_lbl)
+        root.addWidget(self._fault_frame)
+
+        btn_row = QHBoxLayout()
+        btn_refresh = QPushButton("REFRESH")
+        btn_refresh.clicked.connect(self.refresh)
+        btn_close = QPushButton("CLOSE")
+        btn_close.setObjectName("CloseBtn")
+        btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(btn_refresh)
+        btn_row.addStretch(1)
+        btn_row.addWidget(btn_close)
+        root.addLayout(btn_row)
+
+        self._tmr = QTimer(self)
+        self._tmr.timeout.connect(self.refresh)
+        self._tmr.start(2000)
+        self.refresh()
+
+    def _make_tile(self, heading, initial, parent_layout):
+        frame = QFrame()
+        frame.setObjectName("BatCard")
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(2)
+        h_lbl = QLabel(heading)
+        h_lbl.setStyleSheet("font-size:8.5pt; font-weight:bold; color:#94A3B8;")
+        v_lbl = QLabel(initial)
+        v_lbl.setStyleSheet("font-family:'Courier New'; font-size:15pt; font-weight:bold; color:#FFFFFF;")
+        lay.addWidget(h_lbl)
+        lay.addWidget(v_lbl)
+        parent_layout.addWidget(frame, 1)
+        return v_lbl
+
+    def refresh(self):
+        info = _load_battery_telemetry()
+        connected = bool(info.get("connected"))
+        stale = bool(info.get("stale"))
+        unix_ts = info.get("unix_ts")
+        if connected and not info.get("mock") and isinstance(unix_ts, (int, float)):
+            if (time.time() - float(unix_ts)) > _BATTERY_STALE_SECONDS:
+                stale = True
+
+        src = info.get("source") or "unknown"
+        port = info.get("port") or "--"
+        ts_str = info.get("timestamp") or info.get("last_timestamp") or "--"
+
+        if not connected or stale:
+            status_txt = "STALE" if stale else "DISCONNECTED"
+            self._conn_lbl.setText(f"{status_txt} | Port: {port}")
+            self._conn_lbl.setStyleSheet("font-size:10pt; font-weight:bold; color:#FF9800;")
+        else:
+            self._conn_lbl.setText(f"CONNECTED ({src}) | {port} | {ts_str}")
+            self._conn_lbl.setStyleSheet("font-size:10pt; font-weight:bold; color:#00E676;")
+
+        soc = info.get("soc_pct", info.get("last_soc_pct"))
+        volt = info.get("total_voltage_v", info.get("last_total_voltage_v"))
+        curr = info.get("current_a")
+        rem_mah = info.get("remaining_capacity_mah")
+        raw_state = info.get("state_label") or info.get("state") or "--"
+        curr_val = 0.0
+        try:
+            curr_val = float(curr or 0.0)
+        except Exception:
+            curr_val = 0.0
+        is_chg = (
+            str(raw_state).lower() == "charging"
+            or int(info.get("charger_status", 0)) == 1
+            or curr_val > 0.02
+        )
+        state_label = "⚡ CHARGING" if is_chg else str(raw_state).upper()
+
+        if soc is not None:
+            self._tile_soc.setText(f"{float(soc):.1f}%")
+            col = "#FF5252" if float(soc) <= 20.0 else "#00E676"
+            self._tile_soc.setStyleSheet(f"font-family:'Courier New'; font-size:15pt; font-weight:bold; color:{col};")
+        else:
+            self._tile_soc.setText("-- %")
+            self._tile_soc.setStyleSheet("font-family:'Courier New'; font-size:15pt; font-weight:bold; color:#94A3B8;")
+
+        self._tile_volt.setText(f"{float(volt):.2f} V" if volt is not None else "-- V")
+        self._tile_curr.setText(f"{float(curr):+.2f} A" if curr is not None else "-- A")
+        rem_txt = f"{int(rem_mah)} mAh" if rem_mah is not None else "--"
+        self._tile_state.setText(f"{state_label}\n{rem_txt}")
+        self._tile_state.setStyleSheet("font-family:'Courier New'; font-size:11pt; font-weight:bold; color:#E2E8F0;")
+
+        cells = info.get("cells_v") or []
+        bal_set = set(info.get("balancing_cells") or [])
+        for idx, lbl in enumerate(self._cell_labels):
+            val = cells[idx] if idx < len(cells) else None
+            bal_tag = " BAL" if (idx + 1) in bal_set else ""
+            if val is not None and float(val) > 0:
+                lbl.setText(f"C{idx + 1}: {float(val):.3f}V{bal_tag}")
+                border = "#00BCD4" if bal_tag else "#2A3A50"
+                lbl.setStyleSheet(
+                    f"background:#121824; border:1px solid {border}; border-radius:6px;"
+                    " padding:6px; font-family:'Courier New'; font-size:10pt; font-weight:bold; color:#F8FAFC;"
+                )
+            else:
+                lbl.setText(f"C{idx + 1}: --")
+                lbl.setStyleSheet(
+                    "background:#121824; border:1px solid #222B3A; border-radius:6px;"
+                    " padding:6px; font-family:'Courier New'; font-size:10pt; color:#64748B;"
+                )
+
+        min_mv = info.get("min_cell_mv") or 0
+        min_no = info.get("min_cell_num") or 0
+        max_mv = info.get("max_cell_mv") or 0
+        max_no = info.get("max_cell_num") or 0
+        delta_mv = info.get("cell_delta_mv") or 0
+        self._min_max_lbl.setText(
+            f"Min: {min_mv}mV (C{min_no}) | Max: {max_mv}mV (C{max_no}) | Delta: {delta_mv}mV"
+        )
+
+        temps = info.get("temperatures_c") or []
+        t_parts = [f"T{i + 1}: {float(t):.1f}C" for i, t in enumerate(temps) if t is not None]
+        self._temps_lbl.setText("Temps: " + (", ".join(t_parts) if t_parts else "--"))
+
+        def _on_off(v):
+            return "ON" if v == 1 else ("OFF" if v == 0 else "--")
+
+        self._mos_lbl.setText(
+            f"Chg MOS: {_on_off(info.get('charge_mos'))} | "
+            f"Dsg MOS: {_on_off(info.get('discharge_mos'))}\n"
+            f"Charger: {_on_off(info.get('charger_status'))} | "
+            f"Load: {_on_off(info.get('load_status'))}"
+        )
+        self._meta_lbl.setText(
+            f"Cells: {info.get('cell_count', '--')} | Life: {info.get('bms_life', '--')} | "
+            f"Bal cells: {sorted(bal_set) if bal_set else 'None'}\n"
+            f"Last packet: {ts_str}"
+        )
+
+        faults = info.get("faults") or []
+        err_msg = info.get("error")
+        if faults:
+            self._fault_frame.setObjectName("BatFault")
+            self._fault_lbl.setText("ACTIVE FAULTS: " + "; ".join(str(f) for f in faults))
+            self._fault_lbl.setStyleSheet("font-size:10pt; font-weight:bold; color:#FF8A80;")
+        elif not connected:
+            self._fault_frame.setObjectName("BatFault")
+            self._fault_lbl.setText(f"BMS OFFLINE: {err_msg or 'Plug Raspberry Pi Pico USB or connect Daly UART'}")
+            self._fault_lbl.setStyleSheet("font-size:10pt; font-weight:bold; color:#FFCC80;")
+        else:
+            self._fault_frame.setObjectName("BatOk")
+            self._fault_lbl.setText("Faults: No Active BMS Faults")
+            self._fault_lbl.setStyleSheet("font-size:10pt; font-weight:bold; color:#80CBC4;")
+        self._fault_frame.style().unpolish(self._fault_frame)
+        self._fault_frame.style().polish(self._fault_frame)
+
+
+class SamplingIntervalDialog(QDialog):
+    """RDSO FRS Clause 3.14: Modal dialog for Sampling Distance & Reporting Interval.
+
+    Clause 3.14: "Sampling distance/ measurement interval of the system should be
+    user selectable of 0.25m or multiple of 0.25m and reporting/exporting interval
+    can be decided by user. However, the sampling interval shall not be changed
+    during measurement."
+    """
+    def __init__(self, cfg, is_measuring=False, parent=None):
+        super().__init__(parent)
+        self.cfg = cfg
+        self.is_measuring = is_measuring
+        self.setWindowTitle("Sampling & Reporting Intervals")
+        self.setModal(True)
+        self.setFixedSize(700, 480)
+        self.setStyleSheet(
+            "QDialog { background:#121824; color:#F1F5F9; border:2px solid #2A3A50; }"
+            "QLabel { color:#E2E8F0; background:transparent; border:none; }"
+            "QFrame#Card { background:#1C2333; border:1px solid #2E3F58; border-radius:10px; }"
+            "QFrame#LockBanner { background:#3E1E1E; border:1px solid #EF5350; border-radius:8px; }"
+            "QPushButton { background:#223047; color:#FFFFFF; border:1px solid #3B5278;"
+            " border-radius:8px; font-size:11pt; font-weight:bold; padding:8px 14px; min-height:44px; }"
+            "QPushButton:pressed { background:#1565C0; }"
+            "QPushButton:disabled { background:#1A202C; color:#64748B; border-color:#2D3748; }"
+            "QPushButton#ActionBtn { background:#0D47A1; border-color:#1E88E5; }"
+            "QPushButton#ActionBtn:pressed { background:#1565C0; }"
+            "QPushButton#SaveBtn { background:#1B5E20; border-color:#2E7D32; color:#FFFFFF; }"
+            "QPushButton#SaveBtn:pressed { background:#2E7D32; }"
+            "QPushButton#CloseBtn { background:#374151; border-color:#4B5563; }"
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 16, 18, 16)
+        root.setSpacing(10)
+
+        # Title and RDSO reference
+        hdr = QHBoxLayout()
+        title = QLabel("SAMPLING & REPORTING INTERVALS")
+        title.setStyleSheet("font-size:14pt; font-weight:bold; color:#00E5FF; letter-spacing:1px;")
+        tag = QLabel("RDSO FRS Cl. 3.14")
+        tag.setStyleSheet("background:#00E5FF22; color:#00E5FF; border:1px solid #00E5FF; border-radius:4px; padding:2px 8px; font-size:9pt; font-weight:bold;")
+        hdr.addWidget(title)
+        hdr.addStretch(1)
+        hdr.addWidget(tag)
+        root.addLayout(hdr)
+
+        # Lockout banner if measurement is active
+        if self.is_measuring:
+            lock_box = QFrame()
+            lock_box.setObjectName("LockBanner")
+            lb_lay = QHBoxLayout(lock_box)
+            lb_lay.setContentsMargins(12, 8, 12, 8)
+            lock_lbl = QLabel("MEASUREMENT IN PROGRESS: Sampling interval is locked per RDSO Cl. 3.14.\nStop measurement before changing interval settings.")
+            lock_lbl.setStyleSheet("color:#FF8A80; font-weight:bold; font-size:9.5pt;")
+            lb_lay.addWidget(lock_lbl)
+            root.addWidget(lock_box)
+
+        # Section 1: Sampling Distance
+        s1 = QFrame()
+        s1.setObjectName("Card")
+        s1_lay = QVBoxLayout(s1)
+        s1_lay.setContentsMargins(14, 10, 14, 10)
+        s1_lay.setSpacing(8)
+
+        lbl1 = QLabel("1. SAMPLING DISTANCE / MEASUREMENT INTERVAL (0.25 m or multiple):")
+        lbl1.setStyleSheet("font-size:10pt; font-weight:bold; color:#93C5FD;")
+        s1_lay.addWidget(lbl1)
+
+        smpl_row = QHBoxLayout()
+        smpl_row.setSpacing(10)
+        self._smpl_buttons = {}
+        curr_smpl = float(self.cfg.get("sampling_distance_m", 0.25))
+        self._selected_smpl = curr_smpl
+
+        options_smpl = [
+            (0.25, "0.25 m\n(Standard)"),
+            (0.50, "0.50 m\n(2 x 0.25m)"),
+            (0.75, "0.75 m\n(3 x 0.25m)"),
+            (1.00, "1.00 m\n(4 x 0.25m)"),
+        ]
+
+        for val, label in options_smpl:
+            btn = QPushButton(label)
+            btn.setFixedHeight(50)
+            btn.setEnabled(not self.is_measuring)
+            btn.clicked.connect(lambda ch, v=val: self._select_smpl(v))
+            smpl_row.addWidget(btn)
+            self._smpl_buttons[val] = btn
+
+        s1_lay.addLayout(smpl_row)
+        root.addWidget(s1)
+
+        # Section 2: Reporting Interval
+        s2 = QFrame()
+        s2.setObjectName("Card")
+        s2_lay = QVBoxLayout(s2)
+        s2_lay.setContentsMargins(14, 10, 14, 10)
+        s2_lay.setSpacing(8)
+
+        lbl2 = QLabel("2. REPORTING / EXPORTING INTERVAL (Decided by user for USB & Reports):")
+        lbl2.setStyleSheet("font-size:10pt; font-weight:bold; color:#93C5FD;")
+        s2_lay.addWidget(lbl2)
+
+        rep_row = QHBoxLayout()
+        rep_row.setSpacing(10)
+        self._rep_buttons = {}
+        curr_rep = float(self.cfg.get("reporting_interval_m", 0.25))
+        self._selected_rep = curr_rep
+
+        options_rep = [
+            (0.25, "0.25 m\n(Detailed)"),
+            (0.50, "0.50 m\n(Every 0.5m)"),
+            (1.00, "1.00 m\n(Summary)"),
+            (5.00, "5.00 m\n(Overview)"),
+            (0.00, "All\n(Raw Points)"),
+        ]
+
+        for val, label in options_rep:
+            btn = QPushButton(label)
+            btn.setFixedHeight(50)
+            btn.setEnabled(not self.is_measuring)
+            btn.clicked.connect(lambda ch, v=val: self._select_rep(v))
+            rep_row.addWidget(btn)
+            self._rep_buttons[val] = btn
+
+        s2_lay.addLayout(rep_row)
+        root.addWidget(s2)
+
+        # Action buttons
+        root.addStretch(1)
+        btn_row = QHBoxLayout()
+        btn_cancel = QPushButton("CANCEL")
+        btn_cancel.setObjectName("CloseBtn")
+        btn_cancel.clicked.connect(self.reject)
+
+        self._btn_save = QPushButton("SAVE & APPLY")
+        self._btn_save.setObjectName("SaveBtn")
+        self._btn_save.setEnabled(not self.is_measuring)
+        self._btn_save.clicked.connect(self._do_save)
+
+        btn_row.addWidget(btn_cancel)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self._btn_save)
+        root.addLayout(btn_row)
+
+        self._refresh_styles()
+
+    def _select_smpl(self, val):
+        self._selected_smpl = val
+        self._refresh_styles()
+
+    def _select_rep(self, val):
+        self._selected_rep = val
+        self._refresh_styles()
+
+    def _refresh_styles(self):
+        active_style = (
+            "background:#0D47A1; border:2px solid #00E5FF; color:#00E5FF;"
+            " font-weight:bold; border-radius:8px; font-size:11pt;"
+        )
+        inactive_style = (
+            "background:#223047; border:1px solid #3B5278; color:#FFFFFF;"
+            " font-weight:bold; border-radius:8px; font-size:10.5pt;"
+        )
+        for val, btn in self._smpl_buttons.items():
+            if abs(val - self._selected_smpl) < 0.01:
+                btn.setStyleSheet(active_style)
+            else:
+                btn.setStyleSheet(inactive_style)
+
+        for val, btn in self._rep_buttons.items():
+            if abs(val - self._selected_rep) < 0.01:
+                btn.setStyleSheet(active_style)
+            else:
+                btn.setStyleSheet(inactive_style)
+
+    def _do_save(self):
+        if self.is_measuring:
+            self.reject()
+            return
+        self.cfg["sampling_distance_m"] = self._selected_smpl
+        self.cfg["reporting_interval_m"] = self._selected_rep
+        save_cfg(self.cfg)
+        self.accept()
+
+
 class TopBar(QWidget):
     sig_close_requested = pyqtSignal()
+    sig_battery_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1687,7 +2422,16 @@ class TopBar(QWidget):
         self._net_col     = QColor("#4CAF50")
         self._sensor_txt  = "SENSOR OK"
         self._sensor_ok   = True
-        self._bat_txt     = "87%"
+        self._bat_pct     = None
+        self._bat_txt     = "--%"
+        self._bat_sub     = ""
+        self._bat_charging = False
+        self._bat_fault   = False
+        self._bat_unix_ts = None
+        self._bat_is_mock = False
+        self._bat_json_mtime = None
+        self._bat_pct_mtime = None
+        self._battery_hit_rect = QRect()
         self._time_txt    = "--:--:--"
         self._title_txt   = "LWTMT"
 
@@ -1710,6 +2454,7 @@ class TopBar(QWidget):
         f_clock   = QFont("Courier New", 14, QFont.Bold)
         f_title   = QFont("Segoe UI", 16, QFont.Bold)
         f_battery = QFont("Courier New", 12, QFont.Bold)
+        f_bat_sub = QFont("Courier New", 8, QFont.Bold)
 
         bw, bg_gap = 6, 4
         bar_hs = (7, 12, 17, 22)
@@ -1746,7 +2491,6 @@ class TopBar(QWidget):
 
         right_pad = 78
         clock_w = 138
-        battery_w = 128
         gap = 12
         sep_gap = 10
 
@@ -1759,95 +2503,213 @@ class TopBar(QWidget):
         sep_x = clock_x - sep_gap
         p.fillRect(sep_x, cy - 8, 1, 16, QColor("#3A4555"))
 
-        # Parse battery percentage
-        try:
-            bat_pct = int("".join(c for c in str(self._bat_txt) if c.isdigit()))
-        except Exception:
-            bat_pct = 87
-        bat_pct = max(0, min(100, bat_pct))
-
-        # Battery icon colors: <= 20% Red, > 20% Green
-        if bat_pct <= 20:
-            bat_col = QColor("#FF3B30")      # Bright Red
+        bat_pct = self._bat_pct
+        if bat_pct is None:
+            bat_col = QColor("#64748B")
+            bat_text_col = QColor("#94A3B8")
+            txt_str = self._bat_txt or "--%"
+        elif self._bat_charging:
+            bat_col = QColor("#00E5FF")
+            bat_text_col = QColor("#00E5FF")
+            txt_str = f"⚡ {bat_pct}%"
+        elif self._bat_fault or bat_pct <= 20:
+            bat_col = QColor("#FF3B30")
             bat_text_col = QColor("#FF3B30")
+            txt_str = f"{bat_pct}%"
         else:
-            bat_col = QColor("#00E676")      # Bright Green
+            bat_col = QColor("#00E676")
             bat_text_col = QColor("#00E676")
+            txt_str = f"{bat_pct}%"
 
-        # Horizontal Battery Icon Dimensions (Horizontal wide aspect ratio)
-        bat_w = 30
-        bat_h = 14
+        # Horizontal Battery Icon Dimensions
+        bat_w = 34
+        bat_h = 16
         term_w = 4
-        term_h = 7
+        term_h = 8
         inner_pad = 2
 
         p.setFont(f_battery)
-        txt_str = f"{bat_pct}%"
         metrics = p.fontMetrics()
         txt_w = metrics.horizontalAdvance(txt_str) if hasattr(metrics, "horizontalAdvance") else metrics.width(txt_str)
 
-        total_bat_w = (bat_w + term_w) + 7 + txt_w
+        total_bat_w = (bat_w + term_w) + 8 + txt_w
         battery_block_x = sep_x - gap - total_bat_w
+        self._battery_hit_rect = QRect(battery_block_x - 8, 2, (sep_x - battery_block_x) + 8, H - 4)
 
+        top_cy = cy
         icon_x = battery_block_x
-        icon_y = cy - (bat_h // 2)
+        icon_y = top_cy - (bat_h // 2)
 
         # Draw Horizontal Battery Body
-        p.setPen(QPen(bat_col, 1.8))
+        p.setPen(QPen(bat_col, 2.0))
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(icon_x, icon_y, bat_w, bat_h, 3, 3)
 
         # Draw Horizontal Battery Terminal (Right side)
         term_x = icon_x + bat_w
-        term_y = cy - (term_h // 2)
+        term_y = top_cy - (term_h // 2)
         p.setPen(Qt.NoPen)
         p.setBrush(bat_col)
         p.drawRoundedRect(term_x, term_y, term_w, term_h, 1.5, 1.5)
 
         # Draw Inner Charge Fill
-        inner_max_w = bat_w - (inner_pad * 2) - 1
-        inner_fill_w = max(1, int(round(inner_max_w * (bat_pct / 100.0))))
-        inner_fill_h = bat_h - (inner_pad * 2)
-        p.fillRect(icon_x + inner_pad + 1, icon_y + inner_pad, inner_fill_w, inner_fill_h, bat_col)
+        if bat_pct is not None:
+            inner_max_w = bat_w - (inner_pad * 2) - 1
+            inner_fill_w = max(1, int(round(inner_max_w * (bat_pct / 100.0))))
+            inner_fill_h = bat_h - (inner_pad * 2)
+            p.fillRect(icon_x + inner_pad + 1, icon_y + inner_pad, inner_fill_w, inner_fill_h, bat_col)
+
+        # Mobile Phone Style Charging Lightning Bolt (⚡) over battery body
+        if self._bat_charging:
+            bcx = icon_x + (bat_w / 2.0)
+            bcy = float(top_cy)
+            bolt = QPolygonF([
+                QPointF(bcx + 1.5, bcy - 5.5),
+                QPointF(bcx - 3.5, bcy + 0.5),
+                QPointF(bcx - 0.5, bcy + 0.5),
+                QPointF(bcx - 1.5, bcy + 5.5),
+                QPointF(bcx + 3.5, bcy - 0.5),
+                QPointF(bcx + 0.5, bcy - 0.5),
+            ])
+            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#FFFFFF"))
+            p.drawPolygon(bolt)
 
         # Draw Battery Percentage Text
-        text_x = term_x + term_w + 7
+        p.setFont(f_battery)
+        text_x = term_x + term_w + 8
         p.setPen(bat_text_col)
-        p.drawText(text_x, 0, txt_w + 10, H, Qt.AlignVCenter | Qt.AlignLeft, txt_str)
+        p.drawText(text_x, icon_y - 2, txt_w + 10, bat_h + 4, Qt.AlignVCenter | Qt.AlignLeft, txt_str)
 
         p.setFont(f_title)
         p.setPen(QColor("#F3F6FB"))
-        title_w = 280
+        title_w = 240
         title_x = max(80, (W - title_w) // 2)
         p.drawText(QRect(title_x, 0, title_w, H),
                    Qt.AlignCenter, self._title_txt)
 
         p.end()
 
+    def mousePressEvent(self, event):
+        if self._battery_hit_rect.isValid() and self._battery_hit_rect.contains(event.pos()):
+            self.sig_battery_clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
     def resizeEvent(self, event):
         self._close_btn.move(14, (self.height() - self._close_btn.height()) // 2)
         super().resizeEvent(event)
 
+    def _apply_battery_info(self, info):
+        if not info or not info.get("connected"):
+            self._bat_pct = None
+            self._bat_txt = "--%"
+            self._bat_sub = ""
+            self._bat_charging = False
+            self._bat_fault = False
+            self._bat_unix_ts = None
+            self._bat_is_mock = False
+            return
+
+        self._bat_unix_ts = info.get("unix_ts")
+        self._bat_is_mock = bool(info.get("mock"))
+        if not self._bat_is_mock and isinstance(self._bat_unix_ts, (int, float)):
+            if (time.time() - float(self._bat_unix_ts)) > _BATTERY_STALE_SECONDS:
+                self._bat_pct = None
+                self._bat_txt = "--%"
+                self._bat_sub = ""
+                self._bat_charging = False
+                self._bat_fault = False
+                return
+
+        soc = info.get("soc_pct", info.get("last_soc_pct"))
+        try:
+            pct_val = max(0, min(100, int(round(float(soc)))))
+        except Exception:
+            pct_val = None
+        self._bat_pct = pct_val
+        self._bat_txt = f"{pct_val}%" if pct_val is not None else "--%"
+
+        # Robust charging detection across state string, charger_status flag, and current
+        curr_val = 0.0
+        try:
+            curr_val = float(info.get("current_a") or 0.0)
+        except Exception:
+            curr_val = 0.0
+
+        charger_status = info.get("charger_status")
+        try:
+            chg_status_code = int(charger_status) if charger_status is not None else 0
+        except Exception:
+            chg_status_code = 0
+
+        state_str = str(info.get("state", "")).strip().lower()
+        state_lbl = str(info.get("state_label", "")).strip().lower()
+
+        self._bat_charging = bool(
+            chg_status_code == 1
+            or state_str == "charging"
+            or state_lbl == "charging"
+            or curr_val > 0.02
+        )
+
+        faults = info.get("faults") or []
+        self._bat_fault = bool(faults)
+        self._bat_sub = ""
+
     def _tick(self):
         self._time_txt = datetime.now().strftime("%H:%M:%S")
-        for b_path in ("/tmp/battery_pct", "/home/debian/trolley/battery_pct.txt"):
+        json_path = next((p for p in _BATTERY_JSON_PATHS if p and os.path.exists(p)), None)
+        pct_path = next((p for p in _BATTERY_PCT_PATHS if os.path.exists(p)), None)
+
+        if json_path:
             try:
-                if os.path.exists(b_path):
-                    with open(b_path, "r") as bf:
-                        val = bf.read().strip()
-                        if val:
-                            self._bat_txt = val if "%" in val else f"{val}%"
-                    break
+                mtime = os.stat(json_path).st_mtime
+                if mtime != self._bat_json_mtime:
+                    self._bat_json_mtime = mtime
+                    with open(json_path, "r", encoding="utf-8") as jf:
+                        self._apply_battery_info(json.load(jf))
+                elif (
+                    self._bat_pct is not None
+                    and not self._bat_is_mock
+                    and isinstance(self._bat_unix_ts, (int, float))
+                    and (time.time() - float(self._bat_unix_ts)) > _BATTERY_STALE_SECONDS
+                ):
+                    self._apply_battery_info({"connected": False, "stale": True})
             except Exception:
                 pass
+        elif pct_path:
+            try:
+                mtime = os.stat(pct_path).st_mtime
+                if mtime != self._bat_pct_mtime:
+                    self._bat_pct_mtime = mtime
+                    with open(pct_path, "r", encoding="utf-8") as bf:
+                        val = bf.read().strip()
+                        if val:
+                            self.set_battery(val)
+            except Exception:
+                pass
+        elif self._bat_json_mtime is not None or self._bat_pct_mtime is not None:
+            self._bat_json_mtime = None
+            self._bat_pct_mtime = None
+            self._apply_battery_info(None)
         self.update()
 
     def set_battery(self, pct):
         try:
             val = int("".join(c for c in str(pct) if c.isdigit()))
+            val = max(0, min(100, val))
+            self._bat_pct = val
             self._bat_txt = f"{val}%"
+            if any(c in str(pct).lower() for c in ("+", "⚡", "chg", "charg")):
+                self._bat_charging = True
+            self._bat_sub = ""
         except Exception:
-            self._bat_txt = str(pct)
+            self._bat_pct = None
+            self._bat_txt = "--%"
+            self._bat_sub = ""
         self.update()
 
     def update_net(self, bars, cloud):
@@ -2015,12 +2877,7 @@ class MetricCard(QFrame):
         self.setObjectName("Card")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        from PyQt5.QtWidgets import QGraphicsDropShadowEffect
-        fx = QGraphicsDropShadowEffect(self)
-        fx.setBlurRadius(16)
-        fx.setOffset(0, 4)
-        fx.setColor(QColor(0, 0, 0, 20))
-        self.setGraphicsEffect(fx)
+        # Omit QGraphicsDropShadowEffect: 16 px CPU blur saturates single-core BBB under software rendering.
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 6)
@@ -2066,14 +2923,13 @@ class MetricCard(QFrame):
 
         self._val = QLabel("---")
         self._val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._val.setMinimumWidth(320)
-        self._val.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self._val.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
         self._unit = QLabel(unit)
         self._unit.setObjectName("UnitLbl")
         self._unit.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self._unit.setFixedWidth(68)
-        self._unit.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self._unit.setMinimumWidth(44)
+        self._unit.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self._apply_unit_style()
 
         pair_l.addWidget(self._val)
@@ -2129,17 +2985,26 @@ class MetricCard(QFrame):
             " background: transparent;"
             " border: none;"
             " font-family: 'Courier New', monospace;"
-            " font-size: 26pt;"
+            " font-size: 20pt;"
             " font-weight: 500;"
-            " letter-spacing: 1px;"
-            " padding-bottom: 14px;"
+            " letter-spacing: 0.5px;"
+            " padding-bottom: 10px;"
             "}")
 
-    def _apply_val_style(self, color, font_size=84):
+    @staticmethod
+    def _font_size_for_text(txt):
+        n = len(str(txt))
+        if n >= 10:
+            return 40
+        if n >= 8:
+            return 48
+        return 56
+
+    def _apply_val_style(self, color, font_size=56):
         self._val.setStyleSheet(
             f"color:{color}; background:transparent; border:none;"
             f" font-family:'Inter','DM Sans','Liberation Sans',sans-serif;"
-            f" font-size:{font_size}pt; font-weight:700; letter-spacing:-3px;")
+            f" font-size:{font_size}pt; font-weight:700; letter-spacing:-1.5px;")
 
     def refresh(self, val):
         self._last_raw_val = val
@@ -2169,7 +3034,7 @@ class MetricCard(QFrame):
                    f" border-left:4px solid {self.color}; border-radius:10px;}}")
             self._apply_badge("NOMINAL", self.color)
             alert_txt = ""
-        font_size = 72 if len(txt) >= 7 else (78 if len(txt) >= 6 else 84)
+        font_size = self._font_size_for_text(txt)
         self._apply_val_style(vc, font_size=font_size)
         self._apply_unit_style()
         self._alert.setText(alert_txt)
@@ -2332,13 +3197,15 @@ class EncoderCal(QWidget):
         self._b_end = _btn("2. END RUN  +  ENTER TRUE DISTANCE", "BG", 48)
         self._b_manual = _btn("ENTER FACTOR MANUALLY", "BX", 44)
         self._b_reset = _btn("RESET FACTOR TO 1.0000", "BX", 44)
-        for button in (self._b_start, self._b_end, self._b_manual, self._b_reset):
+        self._b_smpl = _btn("SAMPLING INTERVAL: 0.25 m", "BC", 44)
+        for button in (self._b_start, self._b_end, self._b_manual, self._b_reset, self._b_smpl):
             lay.addWidget(button)
         self._b_end.setEnabled(False)
         self._b_start.clicked.connect(self._start_run)
         self._b_end.clicked.connect(self._end_run)
         self._b_manual.clicked.connect(self._manual)
         self._b_reset.clicked.connect(self._reset)
+        self._b_smpl.clicked.connect(self._change_sampling_interval)
 
         self._tmr = QTimer(self)
         self._tmr.timeout.connect(self._tick)
@@ -2356,10 +3223,23 @@ class EncoderCal(QWidget):
     def _refresh(self):
         enc = self._enc()
         state = "CALIBRATED" if enc.get("calibrated") else "NOT CALIBRATED"
+        smpl = float(self.cfg.get("sampling_distance_m", 0.25))
         self._info.setText(
             f"Factor {enc.get('factor', 1.0):.4f}   |   "
             f"Scale {enc['scale']:.6f} mm/count   |   {state}"
         )
+        if hasattr(self, "_b_smpl"):
+            is_measuring = bool(self.sensor and getattr(self.sensor, "active", False))
+            self._b_smpl.setEnabled(not is_measuring)
+            lock_tag = " [LOCKED DURING MEASUREMENT]" if is_measuring else ""
+            self._b_smpl.setText(f"SAMPLING INTERVAL: {smpl:.2f} m (RDSO Cl. 3.14){lock_tag}")
+
+    def _change_sampling_interval(self):
+        is_measuring = bool(self.sensor and getattr(self.sensor, "active", False))
+        dlg = SamplingIntervalDialog(self.cfg, is_measuring=is_measuring, parent=self)
+        if dlg.exec_() == QDialog.Accepted and not is_measuring:
+            save_cfg(self.cfg)
+            self._refresh()
 
     def _tick(self):
         if self._start_raw is None or self.sensor is None:
@@ -3646,9 +4526,35 @@ class USBExportRangeDialog(QDialog):
                 for index in self._table.selectionModel().selectedRows()]
 
 
+class _UsbExportWorker(QThread):
+    """Runs USB export helper off the GUI thread so touchscreen UI stays responsive."""
+
+    done = pyqtSignal(int, str)
+
+    def __init__(self, command, parent=None):
+        super().__init__(parent)
+        self.command = list(command)
+
+    def run(self):
+        try:
+            result = subprocess.run(
+                self.command,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            detail = (result.stdout or result.stderr or "").strip()
+            self.done.emit(int(result.returncode), detail)
+        except subprocess.TimeoutExpired:
+            self.done.emit(-1, "Export timed out. Do not remove the USB drive; try again.")
+        except Exception as exc:
+            self.done.emit(-2, str(exc))
+
+
 class CSVViewerPage(QWidget):
     sig_back = pyqtSignal()
     sig_before_export = pyqtSignal()
+    sig_files_deleted = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3662,29 +4568,35 @@ class CSVViewerPage(QWidget):
         hdr_w.setObjectName("CSVHeader")
         hdr_w.setFixedHeight(80)
         hdr = QHBoxLayout(hdr_w)
-        hdr.setContentsMargins(14, 12, 14, 12)
-        hdr.setSpacing(12)
+        hdr.setContentsMargins(12, 12, 12, 12)
+        hdr.setSpacing(8)
 
         self._view_mode = "files"
         self._current_loaded_path = ""
         self._all_selected = False
-        self._back_btn = _btn("<  BACK TO DASHBOARD", "CSVBack", 52, 220)
+        self._back_btn = _btn("<  BACK TO DASHBOARD", "CSVBack", 52, 200)
         self._back_btn.clicked.connect(self._on_back_clicked)
         back = self._back_btn
 
+        self._cfg = load_cfg()
+        self._reporting_interval_m = float(self._cfg.get("reporting_interval_m", 0.25))
+        self._interval_btn = _btn(self._format_interval_label(self._reporting_interval_m), "CSVRefresh", 52, 140)
+        self._interval_btn.setToolTip("Tap to change reporting/export interval (RDSO Cl. 3.14)")
+        self._interval_btn.clicked.connect(self._cycle_reporting_interval)
 
-        self._export_btn = _btn("EXPORT TO USB (EXCEL)", "CSVExport", 52, 280)
+        self._export_btn = _btn("EXPORT TO USB (EXCEL)", "CSVExport", 52, 225)
         export_btn = self._export_btn
         export_btn.clicked.connect(self._export_selected_to_usb)
-        self._select_all_btn = _btn("SELECT ALL", "CSVRefresh", 52, 130)
+        self._delete_btn = _btn("DELETE SELECTED", "CSVDelete", 52, 180)
+        self._delete_btn.clicked.connect(self._delete_selected_files)
+        self._select_all_btn = _btn("SELECT ALL", "CSVRefresh", 52, 125)
         self._select_all_btn.clicked.connect(self._toggle_select_all)
-        self._top_refresh = _btn("REFRESH FILE LIST", "CSVRefresh", 52, 175)
+        self._top_refresh = _btn("REFRESH FILE LIST", "CSVRefresh", 52, 165)
         top_refresh = self._top_refresh
         top_refresh.clicked.connect(self._refresh_list)
 
-        # Matching side areas keep the primary USB action exactly centered.
         right_actions = QWidget()
-        right_actions.setFixedWidth(320)
+        right_actions.setFixedWidth(298)
         right_layout = QHBoxLayout(right_actions)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addStretch(1)
@@ -3694,7 +4606,9 @@ class CSVViewerPage(QWidget):
 
         hdr.addWidget(back)
         hdr.addStretch(1)
+        hdr.addWidget(self._interval_btn)
         hdr.addWidget(export_btn)
+        hdr.addWidget(self._delete_btn)
         hdr.addStretch(1)
         hdr.addWidget(right_actions)
         root.addWidget(hdr_w)
@@ -3799,6 +4713,8 @@ class CSVViewerPage(QWidget):
         self._all_selected = False
         self._back_btn.setText("<  BACK TO DASHBOARD")
         self._export_btn.setText("EXPORT TO USB (EXCEL)")
+        if hasattr(self, "_delete_btn"):
+            self._delete_btn.setText("DELETE SELECTED")
         if hasattr(self, "_select_all_btn") and True:
             self._select_all_btn.setVisible(True)
             self._select_all_btn.setText("SELECT ALL")
@@ -3846,6 +4762,8 @@ class CSVViewerPage(QWidget):
         self._current_loaded_path = ""
         self._back_btn.setText("<  BACK TO DASHBOARD")
         self._export_btn.setText("EXPORT TO USB (EXCEL)")
+        if hasattr(self, "_delete_btn"):
+            self._delete_btn.setText("DELETE SELECTED")
         if hasattr(self, "_select_all_btn") and True:
             self._select_all_btn.setVisible(True)
         pass
@@ -3891,15 +4809,23 @@ class CSVViewerPage(QWidget):
             info_item.setTextAlignment(Qt.AlignCenter)
             self._table.setItem(row, 2, info_item)
 
+        storage_info = get_bbb_storage_usage(self._csv_dir)
+        storage_suffix = ""
+        if storage_info:
+            avail_str = _fmt_storage_bytes(storage_info.get("avail_bytes", 0))
+            storage_suffix = (
+                f" | BBB Storage: {storage_info['used_pct']:.1f}% used ({avail_str} free)"
+            )
+
         now_str = datetime.now().strftime("%H:%M:%S")
         if files:
             self._row_lbl.setText(
-                f"{len(files)} survey file(s) found. Refreshed at {now_str}. "
-                f"Tap file name to VIEW records, or tick checkboxes to COPY TO USB."
+                f"{len(files)} survey file(s) found ({now_str}){storage_suffix}. "
+                f"Tap name to VIEW, or tick boxes to EXPORT / DELETE."
             )
         else:
             self._row_lbl.setText(
-                f"No CSV files found in {self._csv_dir}. Refreshed at {now_str}."
+                f"No CSV files found in {self._csv_dir} ({now_str}){storage_suffix}."
             )
 
     def _browse(self):
@@ -3921,63 +4847,176 @@ class CSVViewerPage(QWidget):
         if path:
             self._load_file(path)
 
+    def _run_usb_export_async(self, command):
+        """Launch USB export helper asynchronously so manual exports do not freeze UI."""
+        if getattr(self, "_usb_worker", None) and self._usb_worker.isRunning():
+            QMessageBox.information(self, "USB export", "A USB export is already running in the background.")
+            return
+        self.sig_before_export.emit()
+        if hasattr(self, "_export_btn"):
+            self._export_btn.setEnabled(False)
+        if hasattr(self, "_row_lbl"):
+            self._row_lbl.setText("Exporting to USB drive in background...")
+        self._usb_worker = _UsbExportWorker(command, self)
+        self._usb_worker.done.connect(self._on_usb_export_done)
+        self._usb_worker.start()
+
+    def _on_usb_export_done(self, returncode, detail):
+        if hasattr(self, "_export_btn"):
+            self._export_btn.setEnabled(True)
+        text = detail or "USB export failed."
+        if hasattr(self, "_row_lbl"):
+            self._row_lbl.setText(text.splitlines()[0])
+        if returncode == 0:
+            QMessageBox.information(
+                self, "USB export complete",
+                text + "\n\nNote: Each survey is exported as one password-protected .zip archive containing both .csv and .xlsx."
+            )
+        else:
+            QMessageBox.warning(self, "USB export", text)
+
+    def _get_selected_csv_paths(self):
+        """Return currently selected CSV path(s) from data view or checked rows."""
+        if getattr(self, "_view_mode", "files") == "data" and getattr(self, "_current_loaded_path", ""):
+            return [self._current_loaded_path]
+        selected = []
+        for row in range(self._table.rowCount()):
+            file_item = self._table.item(row, 1)
+            check_item = self._table.item(row, 0)
+            if check_item and check_item.checkState() == Qt.Checked and file_item:
+                path = file_item.data(Qt.UserRole)
+                if path:
+                    selected.append(path)
+        return selected
+
+    def _active_recording_path(self):
+        """Return the resolved path of an actively open survey log, if any."""
+        win = self.window()
+        logger = getattr(win, "logger", None)
+        if not logger or not getattr(logger, "path", None):
+            return ""
+        if getattr(logger, "_f", None) is None:
+            return ""
+        return os.path.abspath(str(logger.path))
+
+    def delete_csv_files(self, paths):
+        """Delete the given survey CSV files, skipping any active open recording.
+
+        Returns ``(deleted_paths, freed_bytes, skipped_active)``.
+        """
+        active_path = self._active_recording_path()
+        deleted = []
+        freed_bytes = 0
+        skipped_active = []
+        for raw_path in paths:
+            abs_path = os.path.abspath(str(raw_path))
+            if active_path and abs_path == active_path:
+                skipped_active.append(abs_path)
+                continue
+            if not os.path.exists(abs_path):
+                continue
+            try:
+                size = os.path.getsize(abs_path)
+            except OSError:
+                size = 0
+            os.remove(abs_path)
+            deleted.append(abs_path)
+            freed_bytes += size
+        if deleted:
+            if getattr(self, "_view_mode", "files") == "data":
+                self._show_file_list()
+            else:
+                self._refresh_list()
+            self.sig_files_deleted.emit()
+        return deleted, freed_bytes, skipped_active
+
+    def _delete_selected_files(self):
+        """Confirm and delete checked (or currently opened) survey CSV files."""
+        selected = self._get_selected_csv_paths()
+        if not selected:
+            QMessageBox.information(
+                self,
+                "Delete surveys",
+                "Tick at least one CSV file checkbox first (or tap a file name to view and delete it).",
+            )
+            return
+        total_bytes = 0
+        for p in selected:
+            try:
+                if os.path.exists(p):
+                    total_bytes += os.path.getsize(p)
+            except OSError:
+                pass
+        size_str = _fmt_storage_bytes(total_bytes)
+        reply = QMessageBox.question(
+            self,
+            "Delete selected surveys",
+            f"Delete {len(selected)} selected survey file(s) ({size_str}) from BBB storage?\n\n"
+            "Make sure important surveys are exported to USB first. This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        deleted, freed_bytes, skipped = self.delete_csv_files(selected)
+        if skipped:
+            QMessageBox.warning(
+                self,
+                "Active survey skipped",
+                "Skipped the currently recording survey file. Stop recording before deleting it.",
+            )
+        if deleted:
+            QMessageBox.information(
+                self,
+                "BBB storage freed",
+                f"Deleted {len(deleted)} survey file(s), freeing {_fmt_storage_bytes(freed_bytes)}.",
+            )
+
+    def _format_interval_label(self, val):
+        if val is None or float(val) <= 0.0:
+            return "REP: ALL"
+        return f"REP: {float(val):.2f}m"
+
+    def _cycle_reporting_interval(self):
+        intervals = [0.25, 0.50, 1.00, 5.00, 0.0]
+        curr = getattr(self, "_reporting_interval_m", 0.25)
+        next_idx = 0
+        for i, v in enumerate(intervals):
+            if abs(v - curr) < 0.01:
+                next_idx = (i + 1) % len(intervals)
+                break
+        self._reporting_interval_m = intervals[next_idx]
+        self._interval_btn.setText(self._format_interval_label(self._reporting_interval_m))
+        self._cfg["reporting_interval_m"] = self._reporting_interval_m
+        save_cfg(self._cfg)
+
+    def set_reporting_interval(self, val):
+        self._reporting_interval_m = float(val)
+        if hasattr(self, "_interval_btn"):
+            self._interval_btn.setText(self._format_interval_label(self._reporting_interval_m))
+
     def _export_selected_to_usb(self):
         """Copy only rows selected in the saved-CSV list to the USB drive."""
-        selected = []
-        if getattr(self, "_view_mode", "files") == "data" and getattr(self, "_current_loaded_path", ""):
-            selected = [self._current_loaded_path]
-        else:
-            for row in range(self._table.rowCount()):
-                file_item = self._table.item(row, 1)
-                check_item = self._table.item(row, 0)
-                if check_item and check_item.checkState() == Qt.Checked and file_item:
-                    path = file_item.data(Qt.UserRole)
-                    if path:
-                        selected.append(path)
+        selected = self._get_selected_csv_paths()
         if not selected:
             QMessageBox.information(self, "USB export", "Tick at least one CSV file checkbox first (or tap a file name to view and export it).")
             return
 
-        self.sig_before_export.emit()
         helper = Path(__file__).resolve().parent / "tools" / "export_surveys_to_usb.py"
         command = [sys.executable, str(helper)]
         for path in selected:
             command.extend(["--file", path])
-        try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=180)
-        except subprocess.TimeoutExpired:
-            QMessageBox.warning(self, "USB export", "Export timed out. Do not remove the USB drive; try again.")
-            return
-        detail = (result.stdout or result.stderr or "USB export failed.").strip()
-        if result.returncode == 0:
-            QMessageBox.information(
-                self, "USB export complete",
-                detail + "\n\nNote: Each survey is exported as one password-protected .zip archive containing both .csv and .xlsx."
-            )
-        else:
-            QMessageBox.warning(self, "USB export", detail)
+        if getattr(self, "_reporting_interval_m", None) is not None:
+            command.extend(["--interval", str(self._reporting_interval_m)])
+        self._run_usb_export_async(command)
 
     def _export_to_usb(self):
         """Copy (never move) all local CSVs to an inserted, mounted USB drive."""
-        self.sig_before_export.emit()
         helper = Path(__file__).resolve().parent / "tools" / "export_surveys_to_usb.py"
-        try:
-            result = subprocess.run(
-                [sys.executable, str(helper), "--source", self._csv_dir],
-                capture_output=True, text=True, timeout=180)
-        except subprocess.TimeoutExpired:
-            QMessageBox.warning(
-                self, "USB export",
-                "Export timed out. Do not remove the USB drive; try again.")
-            return
-        detail = (result.stdout or result.stderr or "USB export failed.").strip()
-        if result.returncode == 0:
-            QMessageBox.information(
-                self, "USB export complete",
-                detail + "\n\nNote: Each survey is exported as one password-protected .zip archive containing both .csv and .xlsx."
-            )
-        else:
-            QMessageBox.warning(self, "USB export", detail)
+        command = [sys.executable, str(helper), "--source", self._csv_dir]
+        if getattr(self, "_reporting_interval_m", None) is not None:
+            command.extend(["--interval", str(self._reporting_interval_m)])
+        self._run_usb_export_async(command)
 
     def _export_range_to_usb(self):
         dialog = USBExportRangeDialog(self._csv_dir, self)
@@ -3987,30 +5026,21 @@ class CSVViewerPage(QWidget):
         if not selected:
             QMessageBox.information(self, "USB export", "Select at least one CSV file to export.")
             return
-        self.sig_before_export.emit()
         helper = Path(__file__).resolve().parent / "tools" / "export_surveys_to_usb.py"
         command = [sys.executable, str(helper)]
         for path in selected:
             command.extend(["--file", path])
-        try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=180)
-        except subprocess.TimeoutExpired:
-            QMessageBox.warning(self, "USB export", "Export timed out. Do not remove the USB drive; try again.")
-            return
-        detail = (result.stdout or result.stderr or "USB export failed.").strip()
-        if result.returncode == 0:
-            QMessageBox.information(
-                self, "USB export complete",
-                detail + "\n\nNote: Each survey is exported as one password-protected .zip archive containing both .csv and .xlsx."
-            )
-        else:
-            QMessageBox.warning(self, "USB export", detail)
+        if getattr(self, "_reporting_interval_m", None) is not None:
+            command.extend(["--interval", str(self._reporting_interval_m)])
+        self._run_usb_export_async(command)
 
     def _load_file(self, path):
         self._view_mode = "data"
         self._current_loaded_path = str(path)
         self._back_btn.setText("<  BACK TO FILE LIST")
         self._export_btn.setText("COPY THIS SURVEY TO USB")
+        if hasattr(self, "_delete_btn"):
+            self._delete_btn.setText("DELETE THIS SURVEY")
         if hasattr(self, "_select_all_btn"):
             self._select_all_btn.setVisible(False)
         if hasattr(self, "_top_refresh"):
@@ -4061,12 +5091,14 @@ class DashboardPage(QWidget):
     sig_entry      = pyqtSignal()
     sig_csv        = pyqtSignal()
     sig_cal        = pyqtSignal()
+    sig_sampling   = pyqtSignal()
     sig_track_mode = pyqtSignal(str)
 
     def __init__(self, initial_mode="straight"):
         super().__init__()
         self._running = False
         self._paused  = False
+        self._sampling_distance_m = 0.25
 
         self.setStyleSheet("background:#ECEFF4;")
 
@@ -4117,24 +5149,24 @@ class DashboardPage(QWidget):
 
         self._entry_btn = QPushButton("DATA ENTRY")
         self._entry_btn.setFixedHeight(58)
-        self._entry_btn.setMinimumWidth(130)
+        self._entry_btn.setMinimumWidth(125)
         self._entry_btn.setStyleSheet(self._ss_action(CYAN))
         self._entry_btn.clicked.connect(self.sig_entry)
 
         self._csv_btn = QPushButton("CSV / USB")
         self._csv_btn.setFixedHeight(58)
-        self._csv_btn.setMinimumWidth(125)
+        self._csv_btn.setMinimumWidth(115)
         self._csv_btn.setStyleSheet(self._ss_action(MAGI))
         self._csv_btn.clicked.connect(self.sig_csv)
 
         self._cal_btn = QPushButton("CALIBRATE")
         self._cal_btn.setFixedHeight(58)
-        self._cal_btn.setMinimumWidth(105)
+        self._cal_btn.setMinimumWidth(100)
         self._cal_btn.setStyleSheet(self._ss_action(AMBER))
         self._cal_btn.clicked.connect(self.sig_cal)
 
         self._station_no = QLabel("STN NO: --")
-        self._station_no.setFixedSize(100, 40)
+        self._station_no.setFixedSize(95, 40)
         self._station_no.setAlignment(Qt.AlignCenter)
         self._station_no.setStyleSheet(
             f"background:{CYAN_LT}; border:1px solid {CYAN}; border-radius:6px;"
@@ -4153,7 +5185,7 @@ class DashboardPage(QWidget):
         bot.addWidget(self._entry_btn)
         bot.addWidget(self._csv_btn)
         bot.addWidget(self._cal_btn)
-        bot.addSpacing(8)
+        bot.addSpacing(6)
         bot.addWidget(self._stat)
         bot.addWidget(self._station_no)
         bot.addStretch()
@@ -4222,6 +5254,9 @@ class DashboardPage(QWidget):
             self._toggle.setStyleSheet(self._ss_stop())
             self._entry_btn.setEnabled(False)
             self._cal_btn.setEnabled(False)
+            if hasattr(self, "_smpl_btn"):
+                self._smpl_btn.setEnabled(False)
+                self._smpl_btn.setToolTip("Sampling interval cannot be changed during measurement (RDSO Cl. 3.14)")
             self._pause_btn.setEnabled(True)
             self._paused = False
             self._pause_btn.setText("⏸  PAUSE")
@@ -4231,11 +5266,22 @@ class DashboardPage(QWidget):
             self._toggle.setStyleSheet(self._ss_start())
             self._entry_btn.setEnabled(True)
             self._cal_btn.setEnabled(True)
+            if hasattr(self, "_smpl_btn"):
+                self._smpl_btn.setEnabled(True)
+                self._smpl_btn.setToolTip("Select sampling & reporting intervals (RDSO Cl. 3.14)")
             self._pause_btn.setEnabled(False)
             self._paused = False
             self._pause_btn.setText("⏸  PAUSE")
             self._pause_btn.setStyleSheet(self._ss_pause())
         self.sig_toggle.emit(self._running)
+
+    def set_sampling_distance(self, distance_m):
+        try:
+            self._sampling_distance_m = float(distance_m)
+        except (ValueError, TypeError):
+            self._sampling_distance_m = 0.25
+        if hasattr(self, "_smpl_btn"):
+            self._smpl_btn.setText(f"SMPL: {self._sampling_distance_m:.2f}m")
 
     def _do_pause(self):
         self._paused = not self._paused
@@ -4285,6 +5331,25 @@ class DashboardPage(QWidget):
 SCREEN_W, SCREEN_H = 1024, 768
 
 
+class ActivityEventFilter(QObject):
+    """Monitors all touches, clicks, and key presses across all widgets
+    to reset idle timer and wake the display immediately on interaction."""
+    def __init__(self, track_app):
+        super().__init__(track_app)
+        self._app = track_app
+
+    def eventFilter(self, obj, event):
+        t = event.type()
+        if t in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
+                 QEvent.MouseMove, QEvent.TouchBegin, QEvent.TouchUpdate,
+                 QEvent.TouchEnd, QEvent.KeyPress):
+            if getattr(self._app, "_screen_off", False):
+                self._app._wake_screen()
+                return True  # Consume wake tap to prevent inadvertent action
+            self._app._last_interaction_time = time.time()
+        return super().eventFilter(obj, event)
+
+
 class TrackApp(QWidget):
     def __init__(self):
         super().__init__()
@@ -4302,12 +5367,13 @@ class TrackApp(QWidget):
         self.sensor.motion.connect(self._on_motion)
         self.sensor.start()
 
-        self._SCREEN_TIMEOUT_MS = 5 * 60 * 1000
+        self._screen_timeout_s = float(self.cfg.get("screen_timeout_s", 30))
         self._last_motion_time  = time.time()
+        self._last_interaction_time = time.time()
         self._screen_off        = False
 
         self._screen_timer = QTimer(self)
-        self._screen_timer.setInterval(10_000)
+        self._screen_timer.setInterval(1000)
         self._screen_timer.timeout.connect(self._check_screen_timeout)
         self._screen_timer.start()
 
@@ -4315,6 +5381,11 @@ class TrackApp(QWidget):
         self._blank.setStyleSheet("background:#000000;")
         self._blank.hide()
         self._blank.mousePressEvent = self._wake_screen
+
+        self._activity_filter = ActivityEventFilter(self)
+        app_inst = QApplication.instance()
+        if app_inst:
+            app_inst.installEventFilter(self._activity_filter)
 
         self.net = NetThread(self.cfg)
         self.net.status.connect(self._on_net)
@@ -4326,6 +5397,7 @@ class TrackApp(QWidget):
 
         self.topbar = TopBar(self)
         self.topbar.sig_close_requested.connect(self.close)
+        self.topbar.sig_battery_clicked.connect(self._show_battery_details)
         self.stack = QStackedWidget()
 
         initial_mode = gauge_limits_for_mode(self.cfg)[0]
@@ -4336,7 +5408,10 @@ class TrackApp(QWidget):
         self.dash.sig_entry.connect(lambda: self._goto(2))
         self.dash.sig_csv.connect(self._show_csv_viewer)
         self.dash.sig_cal.connect(self._request_calibration_access)
+        self.dash.sig_sampling.connect(self._show_sampling_dialog)
         self.dash.sig_track_mode.connect(self._on_track_mode)
+        self.dash.set_sampling_distance(self.cfg.get("sampling_distance_m", 0.25))
+        self.logger.sampling_distance_m = float(self.cfg.get("sampling_distance_m", 0.25))
         self.stack.addWidget(self.dash)       # 0
 
         self.cal = CalibrationPage(self.cfg, self.sensor)
@@ -4355,17 +5430,33 @@ class TrackApp(QWidget):
         self.csv_viewer = CSVViewerPage()
         self.csv_viewer.sig_back.connect(lambda: self._goto(0))
         self.csv_viewer.sig_before_export.connect(self._flush_csv_for_export)
+        self.csv_viewer.sig_files_deleted.connect(self._check_storage_usage)
         self.csv_viewer.set_csv_dir(self.cfg["csv_dir"])
         self.stack.addWidget(self.csv_viewer) # 4
 
         root.addWidget(self.topbar)
         root.addWidget(self.stack, 1)
 
+        self._storage_alert_tier = 0
+        self._storage_dialog_open = False
+        self._storage_timer = QTimer(self)
+        self._storage_timer.setInterval(60_000)
+        self._storage_timer.timeout.connect(self._check_storage_usage)
+        self._storage_timer.start()
+
         self._apply_screen_geometry()
         self.showFullScreen()
+        QTimer.singleShot(3000, self._check_storage_usage)
 
     def _apply_screen_geometry(self):
-        screen = self.screen() or QApplication.primaryScreen()
+        screen = None
+        if hasattr(self, "screen"):
+            try:
+                screen = self.screen()
+            except Exception:
+                screen = None
+        if not screen:
+            screen = QApplication.primaryScreen()
         if not screen:
             return
         geom = screen.availableGeometry()
@@ -4437,6 +5528,53 @@ class TrackApp(QWidget):
     def _on_net(self, bars, cloud):
         self.topbar.update_net(bars, cloud)
 
+    def _show_battery_details(self):
+        dlg = BatteryStatusDialog(self)
+        dlg.exec_()
+
+    def _present_storage_warning(self, info, warn_pct, crit_pct):
+        """Show the BBB storage popup modally and handle action selection."""
+        dlg = StorageWarningDialog(info, warn_pct=warn_pct, crit_pct=crit_pct, parent=self)
+        dlg.exec_()
+        if dlg.open_csv_requested and hasattr(self, "_show_csv_viewer"):
+            self._show_csv_viewer()
+
+    def _check_storage_usage(self, force=False):
+        """Check BBB storage usage and warn when capacity reaches >= 80%."""
+        if getattr(self, "_storage_dialog_open", False):
+            return None
+        info = get_bbb_storage_usage(self.cfg.get("csv_dir"))
+        if info is None:
+            return None
+        warn_pct, crit_pct = get_bbb_storage_thresholds()
+        tier = _storage_alert_tier(info["used_pct"], warn_pct, crit_pct)
+        if tier == 0:
+            self._storage_alert_tier = 0
+            return info
+        prev_tier = getattr(self, "_storage_alert_tier", 0)
+        if not force and tier <= prev_tier:
+            return info
+        if getattr(self, "_screen_off", False) and hasattr(self, "_wake_screen"):
+            self._wake_screen()
+        self._storage_dialog_open = True
+        try:
+            self._storage_alert_tier = max(prev_tier, tier)
+            self._present_storage_warning(info, warn_pct, crit_pct)
+        finally:
+            self._storage_dialog_open = False
+        return info
+
+    def _show_sampling_dialog(self):
+        is_running = getattr(self.dash, "_running", False) or getattr(self.sensor, "active", False)
+        dlg = SamplingIntervalDialog(self.cfg, is_measuring=is_running, parent=self)
+        if dlg.exec_() == QDialog.Accepted and not is_running:
+            smpl_m = float(self.cfg.get("sampling_distance_m", 0.25))
+            self.dash.set_sampling_distance(smpl_m)
+            self.logger.sampling_distance_m = smpl_m
+            save_cfg(self.cfg)
+            if hasattr(self, "csv_viewer") and hasattr(self.csv_viewer, "set_reporting_interval"):
+                self.csv_viewer.set_reporting_interval(self.cfg.get("reporting_interval_m", 0.25))
+
     def _on_toggle(self, running):
         self.sensor.active = running
         if running:
@@ -4444,7 +5582,9 @@ class TrackApp(QWidget):
             self.logger.set_station("BLE")
             self.sensor.reset()
             self.history = {k: [] for k in self.history}
-            self.logger.start(self.cfg["csv_dir"], self.cfg.get("hl_sec", 30))
+            self.logger.start(self.cfg["csv_dir"], self.cfg.get("hl_sec", 30),
+                              sampling_distance_m=self.cfg.get("sampling_distance_m", 0.25))
+            QTimer.singleShot(200, self._check_storage_usage)
         else:
             self.sensor.reset()
             self.dash.update_data({"gauge": 0.0, "cross": 0.0, "twist": 0.0, "dist": 0.0})
@@ -4456,26 +5596,39 @@ class TrackApp(QWidget):
     def _on_motion(self, moving):
         if moving:
             self._last_motion_time = time.time()
-            if self._screen_off:
+            if getattr(self, "_screen_off", False):
                 self._wake_screen()
 
     def _check_screen_timeout(self):
-        if self._screen_off:
+        if getattr(self, "_screen_off", False):
             return
-        idle_ms = (time.time() - self._last_motion_time) * 1000
-        if idle_ms >= self._SCREEN_TIMEOUT_MS:
+        now = time.time()
+        idle_motion_s = now - self._last_motion_time
+        idle_user_s = now - self._last_interaction_time
+        min_idle_s = min(idle_motion_s, idle_user_s)
+        timeout_s = float(getattr(self, "_screen_timeout_s", 30))
+        if min_idle_s >= timeout_s:
             self._blank_screen()
 
     def _blank_screen(self):
+        if getattr(self, "_screen_off", False):
+            return
         self._screen_off = True
         self._blank.setGeometry(self.rect())
         self._blank.raise_()
         self._blank.show()
+        print("[POWER] Idle timeout reached -> Screen OFF (Display sleeping to save battery)", flush=True)
 
     def _wake_screen(self, _event=None):
         self._screen_off       = False
-        self._last_motion_time = time.time()
+        now = time.time()
+        self._last_motion_time = now
+        self._last_interaction_time = now
         self._blank.hide()
+        self.update()
+        if hasattr(self, "dash"):
+            self.dash.update()
+        print("[POWER] User touch or trolley motion detected -> Screen ON (Awake)", flush=True)
 
     def _on_mark(self, sec):
         self.cfg["hl_sec"] = sec

@@ -7,6 +7,7 @@
  * And publishes the latest sample into POSIX shared memory.
  */
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -21,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <time.h>
@@ -34,6 +36,8 @@
 #define ACQUISITION_NS       (1000000000L / ACQUISITION_HZ)
 #define SCL3300_READ_HZ      10
 #define SCL3300_READ_DIV     (ACQUISITION_HZ / SCL3300_READ_HZ)
+#define GAUGE_READ_HZ        10
+#define GAUGE_READ_DIV       (ACQUISITION_HZ / GAUGE_READ_HZ)
 #define TWIST_HISTORY_MAX    200
 #define STATUS_CHECK_SECS    5
 #define CL_FILTER_TAPS       8
@@ -44,7 +48,11 @@
 #define AM335X_GPIO1_BASE     0x4804C000u
 #define AM335X_GPIO1_SIZE     0x1000u
 #define AM335X_GPIO_DATAIN_OFF (0x138u / 4u)
-#define ENCODER_EVENT_BATCH   64
+#define ENCODER_EVENT_BATCH         64
+#define ENCODER_MIN_EDGE_US_DEFAULT 25
+#define ENCODER_STORM_WINDOW_NS     10000000ULL
+#define ENCODER_STORM_MAX_EVENTS    256
+#define ENCODER_STORM_YIELD_NS      2000000L
 /* Count both edges of B and sample A for direction: 400 PPR -> 800 counts/rev. */
 #define ENCODER_DECODE        2.0
 #define ENCODER_DEFAULT_PPR  400.0
@@ -981,14 +989,15 @@ static inline int read_gpio_a_level(EncoderPRU *enc) {
 static void *encoder_gpio_worker(void *opaque) {
     EncoderPRU *enc = (EncoderPRU *)opaque;
 
-    /* Set maximum real-time priority (SCHED_FIFO 98) to prevent OS preemption */
+    /* Stay on normal fair-share scheduling (SCHED_OTHER) so EMI pulse bursts never starve Xorg or the Qt UI. */
     struct sched_param sparam;
     memset(&sparam, 0, sizeof(sparam));
-    sparam.sched_priority = 98;
-    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sparam) != 0) {
-        sparam.sched_priority = 50;
-        pthread_setschedparam(pthread_self(), SCHED_RR, &sparam);
-    }
+    pthread_setschedparam(pthread_self(), SCHED_OTHER, &sparam);
+
+    const uint64_t min_edge_ns = (uint64_t)env_int("RAIL_ENCODER_MIN_EDGE_US", ENCODER_MIN_EDGE_US_DEFAULT) * 1000ULL;
+    uint64_t last_edge_ns = 0;
+    uint64_t storm_win_start_ns = 0;
+    int storm_events = 0;
 
     struct pollfd pfd;
     pfd.fd = enc->b_event_fd;
@@ -1007,19 +1016,87 @@ static void *encoder_gpio_worker(void *opaque) {
         int num_events = (int)(bytes / sizeof(struct gpioevent_data));
         if (num_events <= 0) continue;
 
-        int dir = 1;
-        if (!enc->forward_only) {
-            /* Determine direction from the most recent edge and instantaneous Channel A level */
-            int last_rising = (events[num_events - 1].id == GPIOEVENT_EVENT_RISING_EDGE);
-            int a_level = read_gpio_a_level(enc);
-            dir = (last_rising == a_level) ? 1 : -1;
+        int accepted = 0;
+        int last_accepted_idx = -1;
+        for (int i = 0; i < num_events; ++i) {
+            uint64_t ts = events[i].timestamp;
+            if (last_edge_ns != 0 && ts < last_edge_ns) {
+                last_edge_ns = ts;
+            }
+            if (min_edge_ns > 0 && last_edge_ns != 0 && (ts - last_edge_ns) < min_edge_ns) {
+                continue;
+            }
+            last_edge_ns = ts;
+            accepted++;
+            last_accepted_idx = i;
         }
 
-        int delta_sum = num_events * dir;
-        __sync_fetch_and_add(&enc->raw_count, delta_sum);
-        enc->sample_us = (uint32_t)(events[num_events - 1].timestamp / 1000ULL);
+        if (accepted > 0) {
+            int dir = 1;
+            if (!enc->forward_only) {
+                /* Determine direction from the most recent accepted edge and instantaneous Channel A level */
+                int last_rising = (events[last_accepted_idx].id == GPIOEVENT_EVENT_RISING_EDGE);
+                int a_level = read_gpio_a_level(enc);
+                dir = (last_rising == a_level) ? 1 : -1;
+            }
+
+            __sync_fetch_and_add(&enc->raw_count, accepted * dir);
+            enc->sample_us = (uint32_t)(events[last_accepted_idx].timestamp / 1000ULL);
+        }
+
+        uint64_t batch_ts = events[num_events - 1].timestamp;
+        if (storm_win_start_ns == 0 || batch_ts < storm_win_start_ns ||
+            (batch_ts - storm_win_start_ns) > ENCODER_STORM_WINDOW_NS) {
+            storm_win_start_ns = batch_ts;
+            storm_events = num_events;
+        } else {
+            storm_events += num_events;
+        }
+
+        /* Back off briefly during noise/EMI edge storms so kernel buffers coalesce without hogging the single CPU core. */
+        if (num_events >= ENCODER_EVENT_BATCH || storm_events >= ENCODER_STORM_MAX_EVENTS) {
+            struct timespec pause_ts = {0, ENCODER_STORM_YIELD_NS};
+            nanosleep(&pause_ts, NULL);
+            storm_win_start_ns = 0;
+            storm_events = 0;
+        }
     }
     return NULL;
+}
+
+static int pru1_remoteproc_is_running(void) {
+    DIR *dir = opendir("/sys/class/remoteproc");
+    if (!dir) return 0;
+
+    struct dirent *ent;
+    int running = 0;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strncmp(ent->d_name, "remoteproc", 10) != 0) continue;
+
+        char path[PATH_MAX];
+        char buf[64];
+        snprintf(path, sizeof(path), "/sys/class/remoteproc/%s/name", ent->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        buf[n] = '\0';
+        if (strstr(buf, "4a338000.pru") == NULL) continue;
+
+        snprintf(path, sizeof(path), "/sys/class/remoteproc/%s/state", ent->d_name);
+        f = fopen(path, "r");
+        if (f) {
+            n = fread(buf, 1, sizeof(buf) - 1, f);
+            fclose(f);
+            buf[n] = '\0';
+            if (strncmp(buf, "running", 7) == 0) {
+                running = 1;
+            }
+        }
+        break;
+    }
+    closedir(dir);
+    return running;
 }
 
 static double load_encoder_factor_from_cfg(void) {
@@ -1067,10 +1144,10 @@ static int encoder_open(EncoderPRU *enc) {
 
     /*
      * [SOLUTION 2] Check for active PRU1 hardware quadrature firmware in PRUSS shared RAM.
-     * PRU1 samples P8_15 (Channel A) and P8_12 (Channel B) synchronously at 1 MHz in hardware
-     * with 0% CPU load, 4X decode (1600 counts/rev), and zero missed pulses (0.01% accuracy).
+     * Require remoteproc2 (4a338000.pru) to actually report state=running so stale SRAM
+     * across warm reboots never fools us into thinking PRU1 is active when it is offline.
      */
-    int pru_fd = open("/dev/mem", O_RDWR | O_SYNC);
+    int pru_fd = pru1_remoteproc_is_running() ? open("/dev/mem", O_RDWR | O_SYNC) : -1;
     if (pru_fd >= 0) {
         void *map = mmap(NULL, PRU_SHARED_MEM_SIZE, PROT_READ | PROT_WRITE,
                          MAP_SHARED, pru_fd, PRU_SHARED_MEM_BASE);
@@ -1107,7 +1184,7 @@ static int encoder_open(EncoderPRU *enc) {
     }
 
     /*
-     * [SOLUTION 1] Fallback: Linux GPIO quadrature mode on P8_15/P8_12 with real-time SCHED_FIFO 98
+     * [SOLUTION 1] Fallback: Linux GPIO quadrature mode on P8_15/P8_12 under SCHED_OTHER + EMI filter
      */
     counts_per_rev = ppr * ENCODER_DECODE; /* 2X decoding: 800 counts/rev */
     enc->mm_per_count = ((M_PI * wheel_diameter_mm) / counts_per_rev) * enc->factor;
@@ -1159,29 +1236,17 @@ static int encoder_open(EncoderPRU *enc) {
     enc->sample_us = 0;
     enc->worker_running = 1;
 
-    pthread_attr_t attr;
-    struct sched_param sparam;
-    pthread_attr_init(&attr);
-    pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
-    sparam.sched_priority = 98;
-    pthread_attr_setschedparam(&attr, &sparam);
-    pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
-
-    if (pthread_create(&enc->thread, &attr, encoder_gpio_worker, enc) != 0) {
-        if (pthread_create(&enc->thread, NULL, encoder_gpio_worker, enc) != 0) {
-            fprintf(stderr, "[ENC] cannot start GPIO edge worker\n");
-            if (enc->gpio1_base) { munmap((void *)enc->gpio1_base, AM335X_GPIO1_SIZE); enc->gpio1_base = NULL; }
-            if (enc->mem_fd >= 0) { close(enc->mem_fd); enc->mem_fd = -1; }
-            close(enc->b_event_fd); enc->b_event_fd = -1;
-            close(enc->a_fd); enc->a_fd = -1;
-            enc->worker_running = 0;
-            pthread_attr_destroy(&attr);
-            return -1;
-        }
+    if (pthread_create(&enc->thread, NULL, encoder_gpio_worker, enc) != 0) {
+        fprintf(stderr, "[ENC] cannot start GPIO edge worker\n");
+        if (enc->gpio1_base) { munmap((void *)enc->gpio1_base, AM335X_GPIO1_SIZE); enc->gpio1_base = NULL; }
+        if (enc->mem_fd >= 0) { close(enc->mem_fd); enc->mem_fd = -1; }
+        close(enc->b_event_fd); enc->b_event_fd = -1;
+        close(enc->a_fd); enc->a_fd = -1;
+        enc->worker_running = 0;
+        return -1;
     }
-    pthread_attr_destroy(&attr);
 
-    printf("[ENC] Linux GPIO quadrature fallback: P8_15=A (gpio1[15]), P8_12=B (gpio1[12]) [RT SCHED_FIFO 98, fwd_only=%d]\n", enc->forward_only);
+    printf("[ENC] Linux GPIO quadrature fallback: P8_15=A (gpio1[15]), P8_12=B (gpio1[12]) [SCHED_OTHER + EMI filter, fwd_only=%d]\n", enc->forward_only);
     printf("[ENC] Geometry: ppr_per_channel=%.0f decode=2X counts_per_rev=%.0f wheel_diameter_mm=%.2f factor=%.6f mm_per_count=%.6f invert=%d max_delta=%d\n",
            ppr, counts_per_rev, wheel_diameter_mm, enc->factor, enc->mm_per_count, enc->invert, enc->max_delta);
     return 0;
@@ -1440,20 +1505,17 @@ int main(void) {
     int hc_intval = ACQUISITION_HZ * STATUS_CHECK_SECS;
     int scl_read_div = SCL3300_READ_DIV > 0 ? SCL3300_READ_DIV : 1;
     int scl_read_cnt = 0;
+    int gauge_read_hz = (int)env_double_any("RAIL_GAUGE_READ_HZ", (double)GAUGE_READ_HZ);
+    if (gauge_read_hz < 1) gauge_read_hz = 1;
+    if (gauge_read_hz > ACQUISITION_HZ) gauge_read_hz = ACQUISITION_HZ;
+    int gauge_read_div = ACQUISITION_HZ / gauge_read_hz;
+    int gauge_read_cnt = 0;
     const float cross_offset_mm = (float)env_double_any("RAIL_CROSS_LEVEL_OFFSET_MM", -10.0);
     struct timespec next;
 
-    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
-        fprintf(stderr, "[MAIN] mlockall warning: %s\n", strerror(errno));
-    }
-
-    {
-        struct sched_param sp;
-        memset(&sp, 0, sizeof(sp));
-        sp.sched_priority = 80;
-        if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
-            fprintf(stderr, "[MAIN] Cannot set SCHED_FIFO: %s\n", strerror(errno));
-        }
+    /* Use fair-share SCHED_OTHER (mild nice -5) instead of SCHED_FIFO so display/touch never starve. */
+    if (setpriority(PRIO_PROCESS, 0, -5) != 0) {
+        fprintf(stderr, "[MAIN] nice(-5) warning: %s\n", strerror(errno));
     }
 
     /* Lock memory pages to eliminate page-fault latency during real-time acquisition */
@@ -1533,8 +1595,11 @@ int main(void) {
             encoder_status = 1u;
         }
 
-        if (gauge_read_mm(&g_gauge, &gauge_mm) == 0) {
-            last_gauge_mm = gauge_mm;
+        if (++gauge_read_cnt >= gauge_read_div) {
+            gauge_read_cnt = 0;
+            if (gauge_read_mm(&g_gauge, &gauge_mm) == 0) {
+                last_gauge_mm = gauge_mm;
+            }
         }
 
         cl_mm = filter_cross_level(cl_mm);

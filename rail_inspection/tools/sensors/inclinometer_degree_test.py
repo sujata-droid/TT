@@ -27,9 +27,9 @@ CMD_DUMMY         = 0x000000FF
 
 # Modes:
 # Mode 1: +/-3g, full +/-90° range (essential for 45° test!)
-CMD_CHANGE_MODE1  = 0xB4000091
+CMD_CHANGE_MODE1  = 0xB400001F
 # Mode 4: +/-0.5g, +/-10° to +/-30° range (high sensitivity for track survey)
-CMD_CHANGE_MODE4  = 0xB4000319
+CMD_CHANGE_MODE4  = 0xB4000338
 
 # Angle readout commands (Datasheet Section 4.3):
 CMD_READ_ANG_X    = 0x240000C7
@@ -92,18 +92,19 @@ class Inclinometer:
         self.spi.open(1, 0)
         self.spi.max_speed_hz = 500000
         self.spi.mode = 0
-        self.zero_deg = 0.0
+        self.zero_deg = 0.262
+        self.scale_factor = 1.0359
         self._init_sensor()
 
     def _init_sensor(self):
         # Software reset
         xfer(self.spi, CMD_SW_RESET)
-        time.sleep(0.05)
+        time.sleep(0.15)
 
         # Set Mode (Mode 1 for +/-90°, Mode 4 for +/-10°)
         mode_cmd = CMD_CHANGE_MODE1 if self.mode == 1 else CMD_CHANGE_MODE4
         xfer(self.spi, mode_cmd)
-        time.sleep(0.05)
+        time.sleep(0.15)
 
         # Pipeline flush (3 transfers)
         xfer(self.spi, CMD_READ_STATUS)
@@ -114,26 +115,47 @@ class Inclinometer:
 
         rs = frame_rs(rx)
         if rs != 0x01:
-            time.sleep(0.02)
+            time.sleep(0.05)
             xfer(self.spi, CMD_READ_STATUS)
             rx = xfer(self.spi, CMD_DUMMY)
+            rs = frame_rs(rx)
+
+        print(f"[SCL3300] RS = 0x{rs:02X} ({'NORMAL' if rs == 0x01 else 'NOT READY'})")
 
         # Read WHOAMI
         xfer(self.spi, CMD_READ_WHOAMI)
         time.sleep(0.002)
         who_rx = xfer(self.spi, CMD_DUMMY)
         whoami = frame_data(who_rx) & 0xFF
+        print(f"[SCL3300] WHOAMI = 0x{whoami:02X} (expected 0xC1)")
         if whoami != 0xC1:
-            print(f"[WARN] WHOAMI returned 0x{whoami:02X} (expected 0xC1)")
+            print(f"[WARN] WHOAMI mismatch!")
+
+        # Prime the ACC pipeline with 2 dummy reads
+        acc_cmd = CMD_READ_ACC_X
+        if self.axis == "Y":
+            acc_cmd = CMD_READ_ACC_Y
+        elif self.axis == "Z":
+            acc_cmd = CMD_READ_ACC_Z
+        xfer(self.spi, acc_cmd)
+        time.sleep(0.002)
+        xfer(self.spi, acc_cmd)
+        time.sleep(0.002)
+        print(f"[SCL3300] Mode {'1 (+/-90 deg)' if self.mode == 1 else '4 (+/-10 deg)'} | Axis: ACC_{self.axis} | Ready")
 
     def read_angle(self) -> float:
-        """Read inclination angle in degrees (-90.0 to +90.0)."""
+        """Read inclination angle in degrees (-90.0 to +90.0).
+
+        Uses ACC register + asin() for reliable readings across all
+        SCL3300 firmware revisions (ANG registers return 0 on some chips).
+        Mode 1 sensitivity: 6000 LSB/g.  Mode 4: 12000 LSB/g.
+        """
         if self.axis == "Y":
-            cmd = CMD_READ_ANG_Y
+            cmd = CMD_READ_ACC_Y
         elif self.axis == "Z":
-            cmd = CMD_READ_ANG_Z
+            cmd = CMD_READ_ACC_Z
         else:
-            cmd = CMD_READ_ANG_X
+            cmd = CMD_READ_ACC_X
 
         xfer(self.spi, cmd)
         time.sleep(0.002)
@@ -141,11 +163,17 @@ class Inclinometer:
 
         if not check_crc(rx):
             return float("nan")
+        if frame_rs(rx) != 0x01:
+            return float("nan")
 
         raw_int = frame_data(rx)
-        # SCL3300 Angle formula: Angle [°] = (ANG / 2^14) * 90°
-        deg = (raw_int / 16384.0) * 90.0
-        return deg - self.zero_deg
+        # Mode 1: 6000 LSB/g, Mode 4: 12000 LSB/g
+        sens = 6000.0 if self.mode == 1 else 12000.0
+        acc_g = raw_int / sens
+        acc_g = max(-1.0, min(1.0, acc_g))
+        deg = math.degrees(math.asin(acc_g))
+        scale = getattr(self, "scale_factor", 1.0)
+        return (deg - self.zero_deg) * scale
 
     def close(self):
         self.spi.close()
@@ -192,7 +220,7 @@ def live_display_mode(incl: Inclinometer, duration: float = 0.0):
                 rad = math.radians(deg)
                 cl_mm = GAUGE_MM * math.sin(rad)
                 bar = render_bar(deg, 50.0, 30)
-                print(f"{elapsed:7.2f}s | {deg:10.2f}°  | {cl_mm:9.2f} mm  | {bar}", flush=True)
+                print(f"{elapsed:7.2f}s | {deg:+12.3f}°  | {cl_mm:+9.3f} mm  | {bar}", flush=True)
             else:
                 print(f"{elapsed:7.2f}s |    CRC/ERR   |      ERR     | [          |          ]", flush=True)
 

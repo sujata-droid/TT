@@ -13,11 +13,15 @@ export RAIL_SCL_AXIS="${RAIL_SCL_AXIS:-X}"
 export RAIL_ENCODER_PPR="${RAIL_ENCODER_PPR:-400}"
 export RAIL_WHEEL_DIAMETER_MM="${RAIL_WHEEL_DIAMETER_MM:-50}"
 export RAIL_ENCODER_INVERT="${RAIL_ENCODER_INVERT:-0}"
+if [ -z "${RAIL_SAMPLING_DISTANCE_M:-}" ] && [ -f "$ROOT_DIR/rail_config.json" ]; then
+    RAIL_SAMPLING_DISTANCE_M=$(python3 -c "import json; print(json.load(open('$ROOT_DIR/rail_config.json')).get('sampling_distance_m', 0.25))" 2>/dev/null || echo "0.25")
+fi
 export RAIL_SAMPLING_DISTANCE_M="${RAIL_SAMPLING_DISTANCE_M:-0.25}"
 export RAIL_TWIST_BASE_M="${RAIL_TWIST_BASE_M:-3.0}"
 export RAIL_ENCODER_DECODE="${RAIL_ENCODER_DECODE:-2.0}"
 export RAIL_ENCODER_FACTOR="${RAIL_ENCODER_FACTOR:-1.123596}"
 export RAIL_ENCODER_FORWARD_ONLY="${RAIL_ENCODER_FORWARD_ONLY:-1}"
+export RAIL_GAUGE_READ_HZ="${RAIL_GAUGE_READ_HZ:-10}"
 if [ -z "${RAIL_GPS_DEVICE:-}" ]; then
     if [ -e /dev/ttyO4 ]; then
         RAIL_GPS_DEVICE=/dev/ttyO4
@@ -87,6 +91,7 @@ echo "[1/8] Verifying files"
 python3 -m py_compile "$ROOT_DIR/railgui25.py"
 python3 -m py_compile "$ROOT_DIR/bbb_runtime/backend_bridge.py"
 python3 -m py_compile "$ROOT_DIR/bbb_runtime/launch_railgui25_backend.py"
+python3 -m py_compile "$ROOT_DIR/tools/daly_bms.py"
 python3 -m py_compile "$ROOT_DIR/tools/encoder_console_test.py"
 make -C "$ROOT_DIR/sensor_board" >/dev/null
 echo "ok"
@@ -97,7 +102,7 @@ if command -v config-pin >/dev/null 2>&1; then
     $SUDO config-pin P8_15 gpio 2>/dev/null || $SUDO config-pin P8_15 default 2>/dev/null || true
     $SUDO config-pin P8_12 gpio 2>/dev/null || $SUDO config-pin P8_12 default 2>/dev/null || true
 fi
-if [ -f "$ROOT_DIR/setup_encoder_pru.sh" ] && command -v clpru >/dev/null 2>&1; then
+if [ -f "$ROOT_DIR/setup_encoder_pru.sh" ] && { [ -s "$ROOT_DIR/pru/encoder_pru1.out" ] || command -v clpru >/dev/null 2>&1; }; then
     $SUDO bash "$ROOT_DIR/setup_encoder_pru.sh" || echo "PRU1 init skipped; using robust GPIO fallback"
 fi
 PRU1_ACTIVE=0

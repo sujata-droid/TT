@@ -179,9 +179,12 @@ def deploy(args):
     from datetime import datetime
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     sudo_run(client, f"date -s '{now_str}'", timeout=10)
+    sudo_run(client, f"cp -f {shell_quote(REMOTE_ROOT + '/bbb_runtime/logs/cloud_queue.json')} /tmp/rail_cloud_queue_backup.json 2>/dev/null || true", timeout=15)
+    sudo_run(client, f"cp -f {shell_quote(REMOTE_ROOT + '/bbb_runtime/logs/cloud_status.json')} /tmp/rail_cloud_status_backup.json 2>/dev/null || true", timeout=15)
     sudo_run(client, f"rm -rf {shell_quote(REMOTE_ROOT)}", timeout=30)
     sudo_run(client, f"mkdir -p {shell_quote(posixpath.dirname(REMOTE_ROOT))}", timeout=30)
     sudo_run(client, f"cp -a {shell_quote(REMOTE_STAGE)} {shell_quote(REMOTE_ROOT)}", timeout=60)
+    sudo_run(client, f"mkdir -p {shell_quote(REMOTE_ROOT + '/bbb_runtime/logs')} && ([ -f /tmp/rail_cloud_queue_backup.json ] && mv -f /tmp/rail_cloud_queue_backup.json {shell_quote(REMOTE_ROOT + '/bbb_runtime/logs/cloud_queue.json')} || true) && ([ -f /tmp/rail_cloud_status_backup.json ] && mv -f /tmp/rail_cloud_status_backup.json {shell_quote(REMOTE_ROOT + '/bbb_runtime/logs/cloud_status.json')} || true)", timeout=20)
     sudo_run(client, f"chown -R {USER}:{USER} {shell_quote(REMOTE_ROOT)}", timeout=60)
     run(client, f"find {shell_quote(REMOTE_ROOT)} -type f -name '*.sh' -exec sed -i 's/\\r$//' {{}} +", timeout=60)
     run(client, f"chmod +x {shell_quote(REMOTE_ROOT + '/setup.sh')}", timeout=30)

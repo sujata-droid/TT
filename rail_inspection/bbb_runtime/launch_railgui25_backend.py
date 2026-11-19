@@ -3,6 +3,7 @@
 
 import argparse
 import functools
+import gzip
 import json
 import math
 import os
@@ -11,6 +12,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -128,31 +130,44 @@ def _get_configured_cloud_url() -> str:
 
 CLOUD_URL = _get_configured_cloud_url()
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+_CLOUD_QUEUE_LOCK = threading.Lock()
 
 
 def _read_queue() -> list:
-    if not QUEUE_FILE.exists():
+    with _CLOUD_QUEUE_LOCK:
+        if not QUEUE_FILE.exists():
+            return []
+        try:
+            data = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [str(x) for x in data if isinstance(x, str)]
+        except Exception:
+            pass
         return []
-    try:
-        data = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            return [str(x) for x in data if isinstance(x, str)]
-    except Exception:
-        pass
-    return []
 
 
 def _write_queue(items: list) -> None:
-    QUEUE_FILE.write_text(json.dumps(items, indent=2), encoding="utf-8")
+    with _CLOUD_QUEUE_LOCK:
+        QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        QUEUE_FILE.write_text(json.dumps(items, indent=2), encoding="utf-8")
 
 
 def _queue_csv(path: str) -> None:
     if not path:
         return
-    items = _read_queue()
-    if path not in items:
-        items.append(path)
-        _write_queue(items)
+    with _CLOUD_QUEUE_LOCK:
+        items = []
+        if QUEUE_FILE.exists():
+            try:
+                data = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    items = [str(x) for x in data if isinstance(x, str)]
+            except Exception:
+                items = []
+        if path not in items:
+            items.append(path)
+            QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            QUEUE_FILE.write_text(json.dumps(items, indent=2), encoding="utf-8")
 
 
 def _write_cloud_status(
@@ -202,41 +217,64 @@ def _build_payload(csv_path: str):
         "station_code": station_no,
         "station": station_no,
         "data": rows,
-    }).encode("utf-8")
+    }, separators=(",", ":")).encode("utf-8")
     return body, len(rows)
 
 
-def _post_payload(body: bytes, timeout: int = CLOUD_UPLOAD_TIMEOUT_SECS):
+def _is_payload_too_large(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError) and exc.code == 413:
+        return True
+    msg = str(exc)
+    return "error: 413" in msg or "413 Request Entity Too Large" in msg or "HTTP 413" in msg
+
+
+def _send_curl(payload_bytes: bytes, timeout: int, use_gzip: bool = False):
     with tempfile.NamedTemporaryFile("wb", delete=False) as handle:
-        handle.write(body)
+        handle.write(payload_bytes)
         payload_path = handle.name
     try:
-        result = subprocess.run(
-            [
-                "curl",
-                "--fail",
-                "--silent",
-                "--show-error",
-                "--max-time",
-                str(int(timeout)),
-                "-H",
-                "Content-Type:application/json",
-                "--data-binary",
-                f"@{payload_path}",
-                CLOUD_URL,
-            ],
+        cmd = [
+            "curl",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            str(int(timeout)),
+            "-H",
+            "Content-Type:application/json",
+        ]
+        if use_gzip:
+            cmd.extend(["-H", "Content-Encoding:gzip"])
+        cmd.extend(["--data-binary", f"@{payload_path}", CLOUD_URL])
+        return subprocess.run(
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip()
-            raise RuntimeError(f"curl upload failed ({result.returncode}): {detail}")
     finally:
         try:
             os.unlink(payload_path)
         except OSError:
             pass
+
+
+def _post_payload(body: bytes, timeout: int = CLOUD_UPLOAD_TIMEOUT_SECS):
+    use_gzip = len(body) > 4096
+    wire_bytes = gzip.compress(body, compresslevel=6) if use_gzip else body
+    result = _send_curl(wire_bytes, timeout, use_gzip=use_gzip)
+    if result.returncode != 0 and use_gzip:
+        detail_low = ((result.stderr or "") + (result.stdout or "")).lower()
+        # Fall back to raw JSON only if the server explicitly rejects gzip encoding.
+        if any(code in detail_low for code in ("415", "400", "501")) and (
+            "gzip" in detail_low or "encoding" in detail_low or "unsupported" in detail_low
+        ):
+            result = _send_curl(body, timeout, use_gzip=False)
+            wire_bytes = body
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        size_mb = len(wire_bytes) / (1024 * 1024)
+        raise RuntimeError(f"curl upload failed ({result.returncode}, {size_mb:.2f} MB): {detail}")
 
 
 def _format_cloud_error(exc: Exception) -> str:
@@ -250,6 +288,8 @@ def _format_cloud_error(exc: Exception) -> str:
         reason = getattr(exc, "reason", None)
         if isinstance(reason, socket.gaierror) and getattr(reason, "errno", None) == -3:
             return "Cloud DNS error (errno -3): host name resolution failed"
+    if _is_payload_too_large(exc):
+        return f"HTTP 413 Request Entity Too Large ({exc}) - increase server upload body limit"
     return str(exc)
 
 
@@ -258,6 +298,7 @@ def _flush_cloud_queue(max_files: int = 1) -> int:
     if not queue:
         return 0
     remaining = []
+    deferred_oversized = []
     uploaded = 0
     for index, path in enumerate(queue):
         if not os.path.exists(path):
@@ -273,15 +314,24 @@ def _flush_cloud_queue(max_files: int = 1) -> int:
                 f"[Cloud] Uploaded queued file ({rows} rows): "
                 f"{os.path.basename(path)}"
             )
-        except Exception:
+        except Exception as exc:
+            if _is_payload_too_large(exc):
+                # Do not wedge newer smaller surveys behind an oversized 413 file.
+                print(
+                    f"[Cloud] Deferred oversized queued file (HTTP 413): "
+                    f"{os.path.basename(path)}"
+                )
+                deferred_oversized.append(path)
+                continue
             remaining.append(path)
             remaining.extend(
                 queued_path for queued_path in queue[index + 1:]
                 if os.path.exists(queued_path)
             )
             break
-    _write_queue(remaining)
-    return len(remaining)
+    final_queue = remaining + deferred_oversized
+    _write_queue(final_queue)
+    return len(final_queue)
 
 
 @functools.lru_cache(maxsize=512)
@@ -661,7 +711,10 @@ def safe_apply_screen_geometry(self) -> None:
 
 
 class BufferedCSVLogger(gui_app.CSVLogger):
-    def start(self, directory, hl_sec=30):
+    def start(self, directory, hl_sec=30, sampling_distance_m=None):
+        if sampling_distance_m is not None:
+            self.sampling_distance_m = float(sampling_distance_m)
+        self._last_logged_dist = None
         os.makedirs(directory, exist_ok=True)
         safe_ts = gui_app.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"BLE_{safe_ts}.csv"
@@ -692,6 +745,26 @@ class BufferedCSVLogger(gui_app.CSVLogger):
     def write(self, d):
         if not self._w:
             return
+        raw_dist = d.get("dist", 0.0)
+        try:
+            curr_dist = float(raw_dist)
+        except (ValueError, TypeError):
+            curr_dist = 0.0
+
+        step = max(0.25, getattr(self, "sampling_distance_m", 0.25))
+        # Distance-gated logging per RDSO FRS Clause 3.14:
+        # Sample 1 is logged at survey start. Subsequent samples require
+        # distance to advance by at least step - 0.005 m.
+        if self._last_logged_dist is not None:
+            delta = abs(curr_dist - self._last_logged_dist)
+            if delta < (step - 0.005):
+                return
+            num_steps = max(1, int(round(delta / step)))
+            direction = 1.0 if curr_dist >= self._last_logged_dist else -1.0
+            self._last_logged_dist += direction * num_steps * step
+        else:
+            self._last_logged_dist = curr_dist
+
         track_app = getattr(self, "_track_app", None)
         if track_app is not None:
             try:
@@ -796,7 +869,7 @@ class CloudPushThread(gui_app.QThread):
                     print(f"[Cloud] Current survey uploaded; queue retry failed: {exc}")
                 return
             except Exception as exc:
-                if attempt == CLOUD_RETRIES - 1:
+                if _is_payload_too_large(exc) or attempt == CLOUD_RETRIES - 1:
                     reason = _format_cloud_error(exc)
                     _queue_csv(self.csv_path)
                     queued_msg = (
@@ -809,26 +882,60 @@ class CloudPushThread(gui_app.QThread):
                 time.sleep(2 ** attempt)
 
 
+class UsbExportThread(gui_app.QThread):
+    done = gui_app.pyqtSignal(int, str)
+
+    def __init__(self, command, parent=None):
+        super().__init__(parent)
+        self.command = list(command)
+
+    def run(self):
+        try:
+            result = subprocess.run(
+                self.command,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            detail = (result.stdout or result.stderr or "").strip()
+            self.done.emit(int(result.returncode), detail)
+        except subprocess.TimeoutExpired:
+            self.done.emit(-1, "Export timed out. Do not remove the USB drive; try again.")
+        except Exception as exc:
+            self.done.emit(-2, str(exc))
+
+
 class RuntimeNetThread(gui_app.NetThread):
     def __init__(self, cfg):
         super().__init__(cfg)
         self._stop = False
+        self._last_queue_flush = 0.0
 
     def stop(self):
         self._stop = True
 
     def run(self):
         while not self._stop:
-            self.status.emit(self._lte(), self._ping())
+            cloud_ok = self._ping()
+            self.status.emit(self._lte(), cloud_ok)
+            if cloud_ok and not gui_app.HW_SIM and CLOUD_URL:
+                now = time.time()
+                if (now - self._last_queue_flush) >= 60.0 and _read_queue():
+                    self._last_queue_flush = now
+                    try:
+                        _flush_cloud_queue(max_files=1)
+                    except Exception as exc:
+                        print(f"[Cloud] Background queue retry error: {exc}")
             self.sleep(15)
 
     def _ping(self):
         if gui_app.HW_SIM or not CLOUD_URL:
             return True
-        # 1. Test HTTP to LWTMT Cloud Dashboard
+        root_url = _cloud_root(CLOUD_URL).rstrip("/")
         for check_url in [
-            _cloud_root(CLOUD_URL).rstrip("/") + "/",
-            _cloud_root(CLOUD_URL).rstrip("/") + "/api/survey",
+            root_url + "/health",
+            root_url + "/",
+            root_url + "/api/survey",
         ]:
             try:
                 request = urllib.request.Request(
@@ -841,21 +948,6 @@ class RuntimeNetThread(gui_app.NetThread):
                         return True
             except urllib.error.HTTPError:
                 return True
-            except Exception:
-                pass
-
-        # 2. Ping server host or gateway
-        host = self.cfg.get("server", "20.8.1.15")
-        for target in [host, "20.8.0.1", "1.1.1.1"]:
-            try:
-                result = subprocess.run(
-                    ["ping", "-c", "1", "-W", "5", target],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=6,
-                )
-                if result.returncode == 0:
-                    return True
             except Exception:
                 pass
         return False
@@ -1113,6 +1205,9 @@ class RuntimeInclinCal(gui_app.QWidget):
 
 
 def _refresh_latest_data(self):
+    # When display is sleeping to save power, pause dashboard redraws
+    if getattr(self, "_screen_off", False):
+        return
     session_state = (self.logger.count, self.sensor.active, self.logger.path or "")
     if session_state != getattr(self, "_rendered_session_state", None):
         self.dash.set_session(*session_state)
@@ -1170,14 +1265,16 @@ def optimized_metric_refresh(self, val):
     else:
         state = ("nominal", self.color, "NOMINAL", "QFrame#Card{background:#FFFFFF; border:1px solid #DDE3EA; border-left:4px solid " + self.color + "; border-radius:10px;}", "")
 
-    if getattr(self, "_last_visual_state", None) != state:
+    font_size = gui_app.MetricCard._font_size_for_text(display)
+    visual_key = (state, font_size)
+    if getattr(self, "_last_visual_state", None) != visual_key:
         _, color, badge, bg, alert = state
         self._apply_badge(badge, color)
-        self._apply_val_style(color)
+        self._apply_val_style(color, font_size=font_size)
         self._apply_unit_style()
         self._alert.setText(alert)
         self.setStyleSheet(bg)
-        self._last_visual_state = state
+        self._last_visual_state = visual_key
 
     self._val.setText(display)
     self._last_display = display
@@ -1953,43 +2050,58 @@ def _cloud_done(self, ok, message, notify=True):
 def _push_csv_to_cloud(self, csv_path, wait=False, notify=True):
     if not csv_path or not CLOUD_URL:
         return
+    if getattr(self, "_cloud_thread", None) and self._cloud_thread.isRunning():
+        _queue_csv(csv_path)
+        return
     self._cloud_thread = CloudPushThread(csv_path, self)
     self._cloud_thread.done.connect(
         lambda ok, msg: _cloud_done(self, ok, msg, notify=notify)
     )
     self._cloud_thread.start()
     if wait:
-        self._cloud_thread.wait(45000)
+        if not self._cloud_thread.wait(5000):
+            _queue_csv(csv_path)
+
+
+def _usb_export_done(self, returncode: int, detail: str):
+    if returncode == 0:
+        gui_app.QMessageBox.information(
+            self,
+            "USB export complete",
+            detail + "\n\nNote: Open the password-protected .zip archive to access both .csv and .xlsx.",
+        )
+    elif returncode != 4:
+        # Code 4 = no USB inserted; ignore silently so normal stop without USB is smooth.
+        gui_app.QMessageBox.warning(self, "USB export", detail or "USB export failed.")
 
 
 def _offer_usb_export(self, csv_path):
-    """Automatically copy completed survey to inserted USB drive on survey stop."""
+    """Automatically copy completed survey to inserted USB drive asynchronously on survey stop."""
     if not csv_path or not os.path.exists(csv_path):
         return
-    helper = PROJECT_DIR / "tools" / "export_surveys_to_usb.py"
-    try:
-        result = subprocess.run(
-            [sys.executable, str(helper), "--file", csv_path],
-            capture_output=True, text=True, timeout=180,
-        )
-    except subprocess.TimeoutExpired:
-        gui_app.QMessageBox.warning(
-            self, "USB export", "Export timed out. Do not remove the USB drive; try again.")
+    if getattr(self, "_usb_export_thread", None) and self._usb_export_thread.isRunning():
         return
-    detail = (result.stdout or result.stderr or "").strip()
-    if result.returncode == 0:
-        gui_app.QMessageBox.information(
-            self, "USB export complete",
-            detail + "\n\nNote: Open the password-protected .zip archive to access both .csv and .xlsx."
-        )
-    elif result.returncode != 4:
-        # Code 4 = no USB inserted; ignore silently so normal stop without USB is smooth.
-        gui_app.QMessageBox.warning(self, "USB export", detail)
+    helper = PROJECT_DIR / "tools" / "export_surveys_to_usb.py"
+    cmd = [sys.executable, str(helper), "--file", csv_path]
+    interval = self.cfg.get("reporting_interval_m", None)
+    if interval is not None:
+        cmd.extend(["--interval", str(interval)])
+    self._usb_export_thread = UsbExportThread(
+        cmd,
+        self,
+    )
+    self._usb_export_thread.done.connect(
+        lambda code, detail: _usb_export_done(self, code, detail)
+    )
+    self._usb_export_thread.start()
 
 
 def optimized_on_toggle(self, running):
     self.sensor.active = running
     if running:
+        if hasattr(self.dash, "_smpl_btn"):
+            self.dash._smpl_btn.setEnabled(False)
+            self.dash._smpl_btn.setToolTip("Sampling interval cannot be changed during measurement (RDSO Cl. 3.14)")
         # Do not create a survey whose identifying/operator fields are all
         # empty.  USB export is a byte-for-byte copy of this local CSV, so
         # blocking this case keeps USB and cloud survey records consistent.
@@ -2012,9 +2124,15 @@ def optimized_on_toggle(self, running):
         self.logger.set_station("BLE")
         self.sensor.reset()
         self.history = {k: [] for k in self.history}
-        self.logger.start(self.cfg["csv_dir"], self.cfg.get("hl_sec", 30))
+        self.logger.start(self.cfg["csv_dir"], self.cfg.get("hl_sec", 30),
+                          sampling_distance_m=self.cfg.get("sampling_distance_m", 0.25))
         _apply_station_reference(self)
+        if hasattr(self, "_check_storage_usage"):
+            gui_app.QTimer.singleShot(200, self._check_storage_usage)
     else:
+        if hasattr(self.dash, "_smpl_btn"):
+            self.dash._smpl_btn.setEnabled(True)
+            self.dash._smpl_btn.setToolTip("Select sampling & reporting intervals (RDSO Cl. 3.14)")
         self.sensor.reset()
         latest = getattr(self, "_latest_sensor_data", None) or {}
         zero_sample = {
@@ -2048,9 +2166,13 @@ def optimized_on_toggle(self, running):
 def runtime_close_event(self, event):
     try:
         self.sensor.active = False
+        if hasattr(self, "_storage_timer"):
+            self._storage_timer.stop()
         if hasattr(self, "logger"):
             saved_path = self.logger.stop()
             _push_csv_to_cloud(self, saved_path, wait=True, notify=False)
+        if getattr(self, "_usb_export_thread", None) and self._usb_export_thread.isRunning():
+            self._usb_export_thread.wait(3000)
         if hasattr(self, "sensor") and self.sensor.isRunning():
             self.sensor.stop()
             self.sensor.wait(3000)
@@ -2093,6 +2215,7 @@ def patched_trackapp_init(original_init):
         self.dash.update_data({"gauge": 0.0, "cross": 0.0, "twist": 0.0, "dist": 0.0})
         self.logger = BufferedCSVLogger()
         self.logger._track_app = self
+        self.logger.sampling_distance_m = float(self.cfg.get("sampling_distance_m", 0.25))
         self.net.stop()
         self.net.wait(1000)
         self.net = RuntimeNetThread(self.cfg)
