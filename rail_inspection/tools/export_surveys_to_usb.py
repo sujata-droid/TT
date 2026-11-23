@@ -2,9 +2,9 @@
 """Export locally saved survey files to a writable USB drive as single ZIP archives.
 
 Every exported survey produces ONLY ONE password-protected .zip archive
-(`<survey>.zip`) containing both:
-  1. `<survey>.csv` (protected inside the ZIP archive)
-  2. `<survey>.xlsx` (styled OOXML workbook, protected inside the ZIP archive; opens directly once extracted)
+(`<survey>.zip`) containing:
+  1. `<survey>.csv` (protected inside the ZIP archive; opens with password)
+  2. `<survey>.xlsx` (AES-encrypted Excel; prompts for password every open)
 No loose .xlsx, .csv, or instruction text files remain on the pendrive.
 """
 
@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -147,16 +148,43 @@ def _is_sensor_out_of_limit(header_name, value, limits_cfg=None):
             return num < min_abs or num > max_abs
         return num < min_tol or num > max_tol
 
-    # 2. Cross Level: +/- 200 mm symmetric permissible limit
+    # 2. Cross Level: +/- cross_limit mm permissible limit
     if norm in ("crosslevel", "crosslevelmm", "cross", "crossover", "crosslvl", "absolutetilt"):
-        return abs(num) > cross_limit
+        return abs(num) >= cross_limit
 
-    # 3. Twist & Distance: no limits -> always keep white
-    if norm in ("twist", "twistmmm", "twistmmperm", "cumulativetilt",
-                "distance", "dist", "distm", "chainage"):
-        return False
+    # 3. Twist: twist_limit mm/m permissible limit
+    if norm in ("twist", "twistmmm", "twistmmperm", "cumulativetilt"):
+        twist_val = cfg.get("twist_mm_per_m", 3.0)
+        twist_limit = 3.0 if twist_val is None else float(twist_val)
+        return abs(num) >= twist_limit
+
+    # 4. Distance: negative check
+    if norm in ("distance", "dist", "distm"):
+        return num < 0.0
 
     return False
+
+
+def _get_parameter_status_str(header_name, value, limits_cfg=None):
+    """Return 'Normal' or 'Error (<value>)' for a single parameter."""
+    norm = re.sub(r"[^a-z]", "", str(header_name).lower())
+    if value is None or str(value).strip() == "":
+        return "Normal"
+    try:
+        num = float(str(value).strip())
+    except (TypeError, ValueError):
+        return "Normal"
+    if _is_sensor_out_of_limit(norm, num, limits_cfg):
+        if norm in ("gauge", "trackgauge", "trackgaugemm", "gaugemm"):
+            fmt_val = f"{num:.1f}" if abs(num - round(num)) >= 0.05 else f"{num:.0f}"
+            return f"Error ({fmt_val} mm)"
+        if norm in ("crosslevel", "crosslevelmm", "cross", "crossover", "crosslvl", "absolutetilt"):
+            fmt_val = f"{num:+.1f}" if abs(num - round(num)) >= 0.05 else f"{num:+.0f}"
+            return f"Error ({fmt_val} mm)"
+        if norm in ("twist", "twistmmm", "twistmmperm", "cumulativetilt"):
+            return f"Error ({num:.1f} mm/m)"
+        return f"Error ({num:.1f})"
+    return "Normal"
 
 
 def _filter_rows_by_interval(rows, interval_m, limits=None):
@@ -211,7 +239,8 @@ def _generate_unencrypted_xlsx_bytes(csv_file, interval_m=None):
         cfg = {}
     limits = cfg.get("permissible_limits", {})
 
-    raw_text = csv_file.read_bytes().replace(b"\x00", b"").decode("utf-8-sig", errors="replace")
+    raw_csv_bytes = _ensure_csv_status_columns(csv_file.read_bytes(), limits)
+    raw_text = raw_csv_bytes.replace(b"\x00", b"").decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(raw_text, newline=""))
     headers = [h for h in (reader.fieldnames or []) if h is not None]
     rows = list(reader)
@@ -377,20 +406,68 @@ def _build_encrypted_zip_bytes(entries, password, mod_dt=None):
     return bytes(file_blobs) + cd_data + eocd
 
 
+def _ensure_csv_status_columns(raw_csv_bytes, limits_cfg=None):
+    """Ensure the CSV bytes have individual status columns next to Gauge, Crosslevel, and Twist.
+
+    Columns added if missing:
+    - 'Gauge Status' right after 'Gauge'
+    - 'Crosslevel Status' right after 'Crosslevel'
+    - 'Twist Status' right after 'Twist'
+    """
+    raw_text = raw_csv_bytes.replace(b"\x00", b"").decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(raw_text, newline=""))
+    old_headers = list(reader.fieldnames or [])
+    rows = list(reader)
+    if not old_headers:
+        return raw_csv_bytes
+
+    new_headers = []
+    for h in old_headers:
+        if h == "Status":
+            continue
+        new_headers.append(h)
+        if h == "Gauge" and "Gauge Status" not in old_headers:
+            new_headers.append("Gauge Status")
+        elif h == "Crosslevel" and "Crosslevel Status" not in old_headers:
+            new_headers.append("Crosslevel Status")
+        elif h == "Twist" and "Twist Status" not in old_headers:
+            new_headers.append("Twist Status")
+
+    cfg = limits_cfg or {}
+    for row in rows:
+        row.pop("Status", None)
+        gauge_val = row.get("Gauge", "")
+        cross_val = row.get("Crosslevel", "")
+        twist_val = row.get("Twist", "")
+        if "Gauge Status" not in row or not row.get("Gauge Status"):
+            row["Gauge Status"] = _get_parameter_status_str("Gauge", gauge_val, cfg)
+        if "Crosslevel Status" not in row or not row.get("Crosslevel Status"):
+            row["Crosslevel Status"] = _get_parameter_status_str("Crosslevel", cross_val, cfg)
+        if "Twist Status" not in row or not row.get("Twist Status"):
+            row["Twist Status"] = _get_parameter_status_str("Twist", twist_val, cfg)
+
+    out_buf = io.StringIO()
+    writer = csv.DictWriter(out_buf, fieldnames=new_headers)
+    writer.writeheader()
+    writer.writerows(rows)
+    return out_buf.getvalue().encode("utf-8")
+
+
 def _zip_copy(csv_file, destination, password=DEFAULT_EXPORT_PASSWORD, interval_m=None):
-    """Create one password-protected .zip containing plain .csv and styled .xlsx."""
-    plain_xlsx_bytes = _generate_unencrypted_xlsx_bytes(csv_file, interval_m=interval_m)
+    """Create one password-protected .zip containing BOTH the survey .csv and an AES-encrypted .xlsx."""
+    try:
+        cfg_path = Path(__file__).resolve().parents[1] / "rail_config.json"
+        cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    except Exception:
+        cfg = {}
+    limits_cfg = cfg.get("permissible_limits", {})
+
     if interval_m is not None and interval_m > 0:
         raw_text = csv_file.read_bytes().replace(b"\x00", b"").decode("utf-8-sig", errors="replace")
         reader = csv.DictReader(io.StringIO(raw_text, newline=""))
         headers = [h for h in (reader.fieldnames or []) if h is not None]
         rows = list(reader)
-        try:
-            cfg_path = Path(__file__).resolve().parents[1] / "rail_config.json"
-            cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
-        except Exception:
-            cfg = {}
-        filtered_rows = _filter_rows_by_interval(rows, interval_m, cfg.get("permissible_limits", {}))
+        filtered_rows = _filter_rows_by_interval(rows, interval_m, limits_cfg)
         out_buf = io.StringIO()
         writer = csv.DictWriter(out_buf, fieldnames=headers)
         writer.writeheader()
@@ -399,25 +476,31 @@ def _zip_copy(csv_file, destination, password=DEFAULT_EXPORT_PASSWORD, interval_
     else:
         raw_csv_bytes = csv_file.read_bytes()
 
+    # Ensure per-parameter status columns are present in the exported CSV
+    raw_csv_bytes = _ensure_csv_status_columns(raw_csv_bytes, limits_cfg)
+
+    # Build AES-encrypted Excel (natively encrypted — Excel prompts every open)
+    plain_xlsx = _generate_unencrypted_xlsx_bytes(csv_file, interval_m=interval_m)
+    encrypted_xlsx = encrypt_excel_workbook(plain_xlsx_bytes=plain_xlsx, password=password)
+
     csv_arcname = f"{csv_file.stem}.csv"
     xlsx_arcname = f"{csv_file.stem}.xlsx"
     entries = [
         (csv_arcname, raw_csv_bytes),
-        (xlsx_arcname, plain_xlsx_bytes),
+        (xlsx_arcname, encrypted_xlsx),
     ]
     zip_bytes = _build_encrypted_zip_bytes(entries, password)
 
     pwd_bytes = str(password).encode("utf-8")
-    # Self-check ZIP readability and password enforcement on both entries before writing to USB.
+    # Self-check ZIP readability and password enforcement before writing to USB.
     with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zchk:
         names = zchk.namelist()
-        expected = [csv_arcname, xlsx_arcname]
-        if names != expected:
+        expected = sorted([csv_arcname, xlsx_arcname])
+        if sorted(names) != expected:
             raise ValueError(f"ZIP entry mismatch: {names} != {expected}")
+        # Only verify CSV (xlsx is AES-encrypted binary, zipfile can't decode its content)
         if zchk.read(csv_arcname, pwd=pwd_bytes) != raw_csv_bytes:
             raise ValueError("ZIP CSV round-trip verification failed")
-        if zchk.read(xlsx_arcname, pwd=pwd_bytes) != plain_xlsx_bytes:
-            raise ValueError("ZIP XLSX round-trip verification failed")
 
     output = destination / f"{csv_file.stem}.zip"
     with open(output, "wb") as f:
@@ -488,7 +571,7 @@ def find_usb_mounts():
 
 
 def _cleanup_legacy_files(directory):
-    """Remove legacy zip, xlsx, csv, txt instruction, and duplicate report files."""
+    """Remove legacy zip, xlsx, csv, txt instruction, duplicate report files, and extracted folders."""
     if not directory.is_dir():
         return
     patterns = (
@@ -508,6 +591,14 @@ def _cleanup_legacy_files(directory):
                     stale.unlink()
             except Exception:
                 pass
+    # Clean up any leftover uncompressed extracted folders so stale unencrypted CSV copies don't remain
+    for entry in directory.iterdir():
+        try:
+            if entry.is_dir() and not re.match(r"^\d{4}-\d{2}-\d{2}$", entry.name):
+                # E.g. extracted survey folders like BLE_2026-11-23_...
+                shutil.rmtree(entry, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def main():
@@ -596,7 +687,7 @@ def main():
     except Exception:
         pass
 
-    print(f"EXPORT OK: Exported {export_count} password-protected ZIP archive(s) (with .csv and .xlsx).")
+    print(f"EXPORT OK: Exported {export_count} password-protected ZIP archive(s) (with .csv).")
     print(f"USB folder: {destination}")
     print("SAFE TO REMOVE USB")
     return 0

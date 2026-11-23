@@ -392,13 +392,37 @@ def exceeds_permissible(field, value, cfg=None):
         if abs(num) > 1000.0:
             return num < min_abs or num > max_abs
         return num < min_tol or num > max_tol
-    if norm in ("twist", "twistmmm", "twistmmperm", "cumulativetilt",
-                "distance", "dist", "distm", "chainage"):
-        return False
     if norm in ("crosslevel", "crosslevelmm", "cross", "crossover", "crosslvl", "absolutetilt"):
-        limit = permissible_limits(active_cfg).get("Crosslevel")
-        return limit is not None and abs(num) > float(limit)
+        limit = permissible_limits(active_cfg).get("Crosslevel", 5.0)
+        return limit is not None and abs(num) >= float(limit)
+    if norm in ("twist", "twistmmm", "twistmmperm", "cumulativetilt"):
+        twist_limit = active_cfg.get("permissible_limits", {}).get("twist_mm_per_m", 3.0)
+        return abs(num) >= float(twist_limit)
+    if norm in ("distance", "dist", "distm"):
+        return num < 0.0
     return False
+
+
+def get_parameter_status(field, value, cfg=None):
+    """Return 'Normal' or 'Error (<value>)' for a given parameter."""
+    norm = re.sub(r"[^a-z]", "", str(field).lower())
+    if value is None or str(value).strip() == "":
+        return "Normal"
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return "Normal"
+    if exceeds_permissible(norm, num, cfg=cfg):
+        if norm in ("gauge", "trackgauge", "trackgaugemm", "gaugemm"):
+            fmt_val = f"{num:.1f}" if abs(num - round(num)) >= 0.05 else f"{num:.0f}"
+            return f"Error ({fmt_val} mm)"
+        if norm in ("crosslevel", "crosslevelmm", "cross", "crossover", "crosslvl", "absolutetilt"):
+            fmt_val = f"{num:+.1f}" if abs(num - round(num)) >= 0.05 else f"{num:+.0f}"
+            return f"Error ({fmt_val} mm)"
+        if norm in ("twist", "twistmmm", "twistmmperm", "cumulativetilt"):
+            return f"Error ({num:.1f} mm/m)"
+        return f"Error ({num:.1f})"
+    return "Normal"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1467,9 +1491,30 @@ _FIELDS = [
     "Longitude",
     "Distance",
     "Gauge",
+    "Gauge Status",
     "Crosslevel",
+    "Crosslevel Status",
     "Twist",
+    "Twist Status",
 ]
+
+
+def _row_status(gauge_val, cross_val, twist_val=None, dist_val=None, cfg=None):
+    """Determine overall row status ('Error' or 'Normal')."""
+    active_cfg = cfg if cfg is not None else load_cfg()
+    if gauge_val is not None and str(gauge_val).strip() != "":
+        if exceeds_permissible("Gauge", gauge_val, cfg=active_cfg):
+            return "Error"
+    if cross_val is not None and str(cross_val).strip() != "":
+        if exceeds_permissible("Crosslevel", cross_val, cfg=active_cfg):
+            return "Error"
+    if twist_val is not None and str(twist_val).strip() != "":
+        if exceeds_permissible("Twist", twist_val, cfg=active_cfg):
+            return "Error"
+    if dist_val is not None and str(dist_val).strip() != "":
+        if exceeds_permissible("Distance", dist_val, cfg=active_cfg):
+            return "Error"
+    return "Normal"
 
 
 class CSVLogger:
@@ -1531,6 +1576,8 @@ class CSVLogger:
 
         cross = d.get("cross", 0)
         station_no = self._station_values.get("Station No", self._station)
+        gauge_val = d.get("gauge", "")
+        twist_val = d.get("twist", 0)
         row = {
             "Sample No": self.count + 1,
             "Date & Time": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
@@ -1557,9 +1604,12 @@ class CSVLogger:
             "Latitude": d.get("lat", 0),
             "Longitude": d.get("lon", 0),
             "Distance": d.get("dist", 0),
-            "Gauge": "",
+            "Gauge": gauge_val,
+            "Gauge Status": get_parameter_status("Gauge", gauge_val),
             "Crosslevel": cross,
-            "Twist": d.get("twist", 0),
+            "Crosslevel Status": get_parameter_status("Crosslevel", cross),
+            "Twist": twist_val,
+            "Twist Status": get_parameter_status("Twist", twist_val),
         }
         self._rows.append((time.time(), row))
         self._w.writerow(row)
@@ -1844,9 +1894,8 @@ class StorageWarningDialog(QDialog):
         root.addWidget(hdr)
 
         msg = QLabel(
-            f"BBB storage has reached {used_pct:.1f}% (threshold: {warn_pct:.0f}% of 100%).\n"
-            "Please increase BBB storage or export and delete old survey files "
-            "before storage runs out."
+            f"Storage is up to {used_pct:.1f}% (threshold: {warn_pct:.0f}% of 100%).\n"
+            "We need to move the files to reduce the storage."
         )
         msg.setWordWrap(True)
         msg.setStyleSheet("font-size:11.5pt; color:#F8FAFC; padding:2px 4px;")
@@ -4584,7 +4633,7 @@ class CSVViewerPage(QWidget):
         self._interval_btn.setToolTip("Tap to change reporting/export interval (RDSO Cl. 3.14)")
         self._interval_btn.clicked.connect(self._cycle_reporting_interval)
 
-        self._export_btn = _btn("EXPORT TO USB (EXCEL)", "CSVExport", 52, 225)
+        self._export_btn = _btn("EXPORT TO USB", "CSVExport", 52, 225)
         export_btn = self._export_btn
         export_btn.clicked.connect(self._export_selected_to_usb)
         self._delete_btn = _btn("DELETE SELECTED", "CSVDelete", 52, 180)
@@ -4712,7 +4761,7 @@ class CSVViewerPage(QWidget):
         self._current_loaded_path = ""
         self._all_selected = False
         self._back_btn.setText("<  BACK TO DASHBOARD")
-        self._export_btn.setText("EXPORT TO USB (EXCEL)")
+        self._export_btn.setText("EXPORT TO USB")
         if hasattr(self, "_delete_btn"):
             self._delete_btn.setText("DELETE SELECTED")
         if hasattr(self, "_select_all_btn") and True:
@@ -4761,7 +4810,7 @@ class CSVViewerPage(QWidget):
         self._view_mode = "files"
         self._current_loaded_path = ""
         self._back_btn.setText("<  BACK TO DASHBOARD")
-        self._export_btn.setText("EXPORT TO USB (EXCEL)")
+        self._export_btn.setText("EXPORT TO USB")
         if hasattr(self, "_delete_btn"):
             self._delete_btn.setText("DELETE SELECTED")
         if hasattr(self, "_select_all_btn") and True:
@@ -4870,7 +4919,7 @@ class CSVViewerPage(QWidget):
         if returncode == 0:
             QMessageBox.information(
                 self, "USB export complete",
-                text + "\n\nNote: Each survey is exported as one password-protected .zip archive containing both .csv and .xlsx."
+                text + "\n\nNote: Each survey is exported as one password-protected .zip archive containing .csv."
             )
         else:
             QMessageBox.warning(self, "USB export", text)
@@ -5332,20 +5381,24 @@ SCREEN_W, SCREEN_H = 1024, 768
 
 
 class ActivityEventFilter(QObject):
-    """Monitors all touches, clicks, and key presses across all widgets
-    to reset idle timer and wake the display immediately on interaction."""
+    """Monitors physical user touches, clicks, and key presses across all widgets
+    to reset idle timer and wake the display upon intentional user interaction.
+    Filters out background mouse hover / move events to prevent USB touchscreen
+    sensor noise from keeping the display awake.
+    """
     def __init__(self, track_app):
         super().__init__(track_app)
         self._app = track_app
 
     def eventFilter(self, obj, event):
         t = event.type()
-        if t in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
-                 QEvent.MouseMove, QEvent.TouchBegin, QEvent.TouchUpdate,
-                 QEvent.TouchEnd, QEvent.KeyPress):
+        # Only real touch presses, button clicks, or key presses qualify as user activity.
+        # QEvent.MouseMove is deliberately excluded because USB capacitive touchscreens
+        # emit high-frequency coordinate/hover noise while resting.
+        if t in (QEvent.MouseButtonPress, QEvent.TouchBegin, QEvent.KeyPress):
             if getattr(self._app, "_screen_off", False):
                 self._app._wake_screen()
-                return True  # Consume wake tap to prevent inadvertent action
+                return True  # Consume wake tap to prevent accidental button activation
             self._app._last_interaction_time = time.time()
         return super().eventFilter(obj, event)
 
@@ -5367,9 +5420,10 @@ class TrackApp(QWidget):
         self.sensor.motion.connect(self._on_motion)
         self.sensor.start()
 
-        self._screen_timeout_s = float(self.cfg.get("screen_timeout_s", 30))
+        self._screen_timeout_s = float(self.cfg.get("screen_timeout_s", 60))
         self._last_motion_time  = time.time()
         self._last_interaction_time = time.time()
+        self._last_wake_tap_time = 0.0
         self._screen_off        = False
 
         self._screen_timer = QTimer(self)
@@ -5380,7 +5434,7 @@ class TrackApp(QWidget):
         self._blank = QWidget(self)
         self._blank.setStyleSheet("background:#000000;")
         self._blank.hide()
-        self._blank.mousePressEvent = self._wake_screen
+        self._blank.mousePressEvent = self._handle_blank_tap
 
         self._activity_filter = ActivityEventFilter(self)
         app_inst = QApplication.instance()
@@ -5599,6 +5653,15 @@ class TrackApp(QWidget):
             if getattr(self, "_screen_off", False):
                 self._wake_screen()
 
+    def _handle_blank_tap(self, _event=None):
+        """Mobile-style double-tap to wake up the screen from sleep."""
+        now = time.time()
+        dt = now - getattr(self, "_last_wake_tap_time", 0.0)
+        self._last_wake_tap_time = now
+        # Double-tap threshold: two taps within 500 ms
+        if dt <= 0.50:
+            self._wake_screen()
+
     def _check_screen_timeout(self):
         if getattr(self, "_screen_off", False):
             return
@@ -5606,7 +5669,7 @@ class TrackApp(QWidget):
         idle_motion_s = now - self._last_motion_time
         idle_user_s = now - self._last_interaction_time
         min_idle_s = min(idle_motion_s, idle_user_s)
-        timeout_s = float(getattr(self, "_screen_timeout_s", 30))
+        timeout_s = float(getattr(self, "_screen_timeout_s", 60))
         if min_idle_s >= timeout_s:
             self._blank_screen()
 
@@ -5617,6 +5680,15 @@ class TrackApp(QWidget):
         self._blank.setGeometry(self.rect())
         self._blank.raise_()
         self._blank.show()
+        # Trigger hardware HDMI DPMS sleep to turn off backlight
+        try:
+            import glob, subprocess
+            auths = glob.glob("/tmp/serverauth.*")
+            auth = auths[0] if auths else "/home/debian/.Xauthority"
+            subprocess.run(["sudo", "env", "DISPLAY=:0", f"XAUTHORITY={auth}", "xset", "dpms", "force", "off"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
         print("[POWER] Idle timeout reached -> Screen OFF (Display sleeping to save battery)", flush=True)
 
     def _wake_screen(self, _event=None):
@@ -5625,6 +5697,15 @@ class TrackApp(QWidget):
         self._last_motion_time = now
         self._last_interaction_time = now
         self._blank.hide()
+        # Trigger hardware HDMI DPMS wake
+        try:
+            import glob, subprocess
+            auths = glob.glob("/tmp/serverauth.*")
+            auth = auths[0] if auths else "/home/debian/.Xauthority"
+            subprocess.run(["sudo", "env", "DISPLAY=:0", f"XAUTHORITY={auth}", "xset", "dpms", "force", "on"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
         self.update()
         if hasattr(self, "dash"):
             self.dash.update()

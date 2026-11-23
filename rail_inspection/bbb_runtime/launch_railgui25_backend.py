@@ -84,8 +84,11 @@ CSV_FIELDS = [
     "Longitude",
     "Distance",
     "Gauge",
+    "Gauge Status",
     "Crosslevel",
+    "Crosslevel Status",
     "Twist",
+    "Twist Status",
 ]
 STATION_REF_PRIORITY = [
     ("Station No", "Station"),
@@ -773,6 +776,10 @@ class BufferedCSVLogger(gui_app.CSVLogger):
                 pass
         cross = d.get("cross", 0)
         twist = d.get("twist", 0)
+        gauge_num = float(d.get("gauge", 0.0))
+        cross_num = float(cross)
+        twist_num = float(twist)
+        cfg_obj = self._track_app.cfg if hasattr(self, "_track_app") and self._track_app else None
         row = {
             "Sample No": self.count + 1,
             "Date & Time": gui_app.datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
@@ -799,9 +806,12 @@ class BufferedCSVLogger(gui_app.CSVLogger):
             "Latitude": f"{float(d.get('lat', 0.0)):.5f}",
             "Longitude": f"{float(d.get('lon', 0.0)):.5f}",
             "Distance": f"{float(d.get('dist', 0.0)):.2f}",
-            "Gauge": f"{float(d.get('gauge', 0.0)):.0f}",
-            "Crosslevel": f"{float(cross):.0f}",
-            "Twist": f"{float(twist):.0f}",
+            "Gauge": f"{gauge_num:.0f}",
+            "Gauge Status": gui_app.get_parameter_status("Gauge", gauge_num, cfg=cfg_obj),
+            "Crosslevel": f"{cross_num:.0f}",
+            "Crosslevel Status": gui_app.get_parameter_status("Crosslevel", cross_num, cfg=cfg_obj),
+            "Twist": f"{twist_num:.0f}",
+            "Twist Status": gui_app.get_parameter_status("Twist", twist_num, cfg=cfg_obj),
         }
         self._rows.append((time.time(), row))
         self._w.writerow(row)
@@ -2068,7 +2078,7 @@ def _usb_export_done(self, returncode: int, detail: str):
         gui_app.QMessageBox.information(
             self,
             "USB export complete",
-            detail + "\n\nNote: Open the password-protected .zip archive to access both .csv and .xlsx.",
+            detail + "\n\nNote: Open the password-protected .zip archive to access the survey .csv.",
         )
     elif returncode != 4:
         # Code 4 = no USB inserted; ignore silently so normal stop without USB is smooth.

@@ -1,4 +1,6 @@
 import csv
+import gzip
+import json
 import os
 import re
 import struct
@@ -20,6 +22,7 @@ from psycopg2.extras import RealDictCursor
 
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH_MB", "50")) * 1024 * 1024
 
 STORAGE_DIR = Path(os.environ.get("STORAGE_DIR", str(Path(tempfile.gettempdir()) / "rail_surveys")))
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -51,8 +54,11 @@ CSV_FIELDS = [
     "Longitude",
     "Distance",
     "Gauge",
+    "Gauge Status",
     "Crosslevel",
+    "Crosslevel Status",
     "Twist",
+    "Twist Status",
 ]
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
@@ -85,8 +91,11 @@ DB_RECORD_FIELDS = [
     ("longitude", "Longitude"),
     ("distance", "Distance"),
     ("gauge", "Gauge"),
+    ("gauge_status", "Gauge Status"),
     ("crosslevel", "Crosslevel"),
+    ("crosslevel_status", "Crosslevel Status"),
     ("twist", "Twist"),
+    ("twist_status", "Twist Status"),
 ]
 
 
@@ -144,8 +153,11 @@ def _ensure_db_schema():
                         longitude DOUBLE PRECISION,
                         distance DOUBLE PRECISION,
                         gauge DOUBLE PRECISION,
+                        gauge_status VARCHAR(64),
                         crosslevel DOUBLE PRECISION,
-                        twist DOUBLE PRECISION
+                        crosslevel_status VARCHAR(64),
+                        twist DOUBLE PRECISION,
+                        twist_status VARCHAR(64)
                     );
                     ALTER TABLE survey_records
                         ADD COLUMN IF NOT EXISTS sample_no INTEGER,
@@ -174,8 +186,11 @@ def _ensure_db_schema():
                         ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION,
                         ADD COLUMN IF NOT EXISTS distance DOUBLE PRECISION,
                         ADD COLUMN IF NOT EXISTS gauge DOUBLE PRECISION,
+                        ADD COLUMN IF NOT EXISTS gauge_status VARCHAR(64),
                         ADD COLUMN IF NOT EXISTS crosslevel DOUBLE PRECISION,
-                        ADD COLUMN IF NOT EXISTS twist DOUBLE PRECISION;
+                        ADD COLUMN IF NOT EXISTS crosslevel_status VARCHAR(64),
+                        ADD COLUMN IF NOT EXISTS twist DOUBLE PRECISION,
+                        ADD COLUMN IF NOT EXISTS twist_status VARCHAR(64);
                 """)
         _schema_ready = True
 
@@ -226,7 +241,7 @@ def _store_rows_in_db(filename, rows):
                 "bridge_start", "bridge_end", "level_crossing_lc_in", "level_crossing_lc_out",
                 "kilometer_post", "points_crossing", "curve_in", "curve_out",
                 "ohe_mast_location", "switch_expansion_joint", "latitude", "longitude", "distance", "gauge",
-                "crosslevel", "twist",
+                "gauge_status", "crosslevel", "crosslevel_status", "twist", "twist_status",
             ]
             placeholders = ", ".join(["%s"] * len(columns))
             query = f"INSERT INTO survey_records ({', '.join(columns)}) VALUES ({placeholders})"
@@ -246,8 +261,11 @@ def _store_rows_in_db(filename, rows):
                     _row_value(row, "OHE Mast (OHEM) Location"), _row_value(row, "Switch Expansion Joint (SEJ)"),
                     _number(_row_value(row, "Latitude", "Lattitude")), _number(_row_value(row, "Longitude")),
                     _number(_row_value(row, "Distance")), _number(_row_value(row, "Gauge")),
+                    str(_row_value(row, "Gauge Status") or "Normal"),
                     _number(_row_value(row, "Crosslevel")),
+                    str(_row_value(row, "Crosslevel Status") or "Normal"),
                     _number(_row_value(row, "Twist")),
+                    str(_row_value(row, "Twist Status") or "Normal"),
                 ))
             return survey_id
 
@@ -262,14 +280,16 @@ def _db_records(station=""):
     fields = ", ".join(
         f"sr.{key}"
         for key, _ in DB_RECORD_FIELDS
-        if key not in {"station_no", "station_code", "crosslevel", "twist"}
+        if key not in {"station_no", "station_code", "crosslevel", "crosslevel_status", "twist", "twist_status"}
     )
     query = f"""
         SELECT sr.survey_id, {fields},
                COALESCE(sr.station_no, s.station_code) AS station_no,
                COALESCE(sr.station_code, s.station_code) AS station_code,
                sr.crosslevel,
-               sr.twist
+               sr.crosslevel_status,
+               sr.twist,
+               sr.twist_status
         FROM survey_records sr JOIN surveys s ON s.id = sr.survey_id
         {where}
         ORDER BY sr.recorded_at ASC NULLS LAST, sr.sample_no ASC, sr.id ASC
@@ -978,8 +998,8 @@ def download_zip(filename: str):
     track_mode = _normalize_track_mode(request.args.get("mode", "straight"))
     rows = _read_csv(path)
     fields = _ordered_fields(rows) if rows else CSV_FIELDS
-    xlsx_bytes = _build_styled_xlsx_bytes(fields, rows, track_mode=track_mode)
     csv_bytes = path.read_bytes()
+    xlsx_bytes = _build_styled_xlsx_bytes(fields, rows, track_mode=track_mode)
     zip_bytes = _build_encrypted_zip_bytes(
         [(f"{path.stem}.csv", csv_bytes), (f"{path.stem}.xlsx", xlsx_bytes)],
         DEFAULT_ZIP_PASSWORD,
@@ -1079,9 +1099,19 @@ def api_survey_file(filename: str):
     )
 
 
+def _parse_json_request():
+    if "gzip" in (request.headers.get("Content-Encoding") or "").lower():
+        try:
+            raw = gzip.decompress(request.get_data())
+            return json.loads(raw.decode("utf-8"))
+        except Exception:
+            return None
+    return request.get_json(silent=True)
+
+
 @app.post("/api/survey")
 def api_survey():
-    payload = request.get_json(silent=True)
+    payload = _parse_json_request()
     if not isinstance(payload, dict):
         abort(400, "expected JSON object")
     rows = payload.get("data")
