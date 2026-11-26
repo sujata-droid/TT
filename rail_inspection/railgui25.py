@@ -352,8 +352,8 @@ def set_track_mode(cfg, mode):
     limits["gauge_max_mm"] = max_abs
     limits["gauge_mm"] = max_tol
     if limits.get("crosslevel_mm") is None:
-        limits["crosslevel_mm"] = 200.0
-    limits["twist_mm_per_m"] = None
+        limits["crosslevel_mm"] = None  # No crosslevel limit (Indian Railway BG)
+    limits["twist_mm_per_m"] = 1.0  # 1 mm/m straight track (Indian Railway BG)
     limits["distance_m"] = None
     if "sync_runtime_thresholds" in globals():
         sync_runtime_thresholds(cfg)
@@ -365,8 +365,6 @@ def permissible_limits(cfg=None):
     active_cfg = cfg or load_cfg()
     limits = active_cfg.get("permissible_limits", {})
     mode_key, nominal, min_tol, max_tol, min_abs, max_abs = gauge_limits_for_mode(active_cfg)
-    cross = limits.get("crosslevel_mm")
-    cross_val = 200.0 if cross is None else float(cross)
     return {
         "Gauge": max_tol,
         "GaugeMinMM": min_abs,
@@ -375,8 +373,8 @@ def permissible_limits(cfg=None):
         "GaugeMaxTol": max_tol,
         "NominalGaugeMM": nominal,
         "TrackMode": mode_key,
-        "Crosslevel": cross_val,
-        "Twist": None,
+        "Crosslevel": None,  # No crosslevel limit (Indian Railway BG)
+        "Twist": limits.get("twist_mm_per_m", 1.0),  # 1 mm/m straight track
     }
 
 
@@ -393,10 +391,11 @@ def exceeds_permissible(field, value, cfg=None):
             return num < min_abs or num > max_abs
         return num < min_tol or num > max_tol
     if norm in ("crosslevel", "crosslevelmm", "cross", "crossover", "crosslvl", "absolutetilt"):
-        limit = permissible_limits(active_cfg).get("Crosslevel", 5.0)
-        return limit is not None and abs(num) >= float(limit)
+        # Indian Railway BG standard: no crosslevel permissible limit
+        return False
     if norm in ("twist", "twistmmm", "twistmmperm", "cumulativetilt"):
-        twist_limit = active_cfg.get("permissible_limits", {}).get("twist_mm_per_m", 3.0)
+        # Indian Railway BG standard: 1 mm/m for straight track
+        twist_limit = active_cfg.get("permissible_limits", {}).get("twist_mm_per_m", 1.0)
         return abs(num) >= float(twist_limit)
     if norm in ("distance", "dist", "distm"):
         return num < 0.0
@@ -5420,7 +5419,8 @@ class TrackApp(QWidget):
         self.sensor.motion.connect(self._on_motion)
         self.sensor.start()
 
-        self._screen_timeout_s = float(self.cfg.get("screen_timeout_s", 60))
+        # Default screen timeout to 0 (disabled) so display stays ON continuously during track inspection
+        self._screen_timeout_s = float(self.cfg.get("screen_timeout_s", 0))
         self._last_motion_time  = time.time()
         self._last_interaction_time = time.time()
         self._last_wake_tap_time = 0.0
@@ -5665,12 +5665,27 @@ class TrackApp(QWidget):
     def _check_screen_timeout(self):
         if getattr(self, "_screen_off", False):
             return
+        timeout_s = float(getattr(self, "_screen_timeout_s", 0))
+        # 0 or negative means screen sleep is disabled (always ON during track operation)
+        if timeout_s <= 0:
+            return
+
+        # NEVER sleep while survey is active (recording or trolley in use on track)
+        if getattr(self.sensor, "active", False):
+            self._last_interaction_time = time.time()
+            self._last_motion_time = time.time()
+            return
+
         now = time.time()
         idle_motion_s = now - self._last_motion_time
         idle_user_s = now - self._last_interaction_time
-        min_idle_s = min(idle_motion_s, idle_user_s)
-        timeout_s = float(getattr(self, "_screen_timeout_s", 60))
-        if min_idle_s >= timeout_s:
+
+        # If trolley moved recently (within 60s), stay awake
+        if idle_motion_s < 60.0:
+            return
+
+        # Only sleep if BOTH trolley is stationary AND no user interaction for timeout_s
+        if idle_motion_s >= timeout_s and idle_user_s >= timeout_s:
             self._blank_screen()
 
     def _blank_screen(self):
