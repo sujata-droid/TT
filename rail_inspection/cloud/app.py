@@ -557,7 +557,8 @@ _XML_INVALID_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
 
 
 NOMINAL_GAUGE_MM = 1676.0
-CROSSLEVEL_LIMIT_MM = 200.0
+# No crosslevel permissible limit per Indian Railway BG standard
+TWIST_LIMIT_MM_PER_M = 1.0  # 1 mm/m for straight track (Indian Railway BG)
 TRACK_GAUGE_MODES = {
     "straight": {
         "label": "Straight (-6 to +6 mm: 1670-1682 mm)",
@@ -583,7 +584,7 @@ def _normalize_track_mode(mode: object) -> str:
 
 
 def _is_cell_out_of_limit(header_name: str, value: object, track_mode: str = "straight") -> bool:
-    """Highlight out-of-limit Track Gauge and Crosslevel (+/- 200 mm); keep Distance/Twist white."""
+    """Highlight out-of-limit Track Gauge and Twist; Crosslevel has no limit per Indian Railway BG."""
     if value is None:
         return False
     val_str = str(value).strip()
@@ -602,10 +603,13 @@ def _is_cell_out_of_limit(header_name: str, value: object, track_mode: str = "st
         if abs(num) > 1000.0:
             return num < (NOMINAL_GAUGE_MM + min_tol) or num > (NOMINAL_GAUGE_MM + max_tol)
         return num < min_tol or num > max_tol
+    # Crosslevel: no limit per Indian Railway BG standard
     if norm in ("crosslevel", "crosslevelmm", "cross", "crossover", "crosslvl", "absolutetilt"):
-        return abs(num) > CROSSLEVEL_LIMIT_MM
-    if norm in ("twist", "twistmmm", "twistmmperm", "cumulativetilt",
-                "distance", "dist", "distm", "chainage"):
+        return False
+    # Twist: 1 mm/m for straight track
+    if norm in ("twist", "twistmmm", "twistmmperm", "cumulativetilt"):
+        return abs(num) > TWIST_LIMIT_MM_PER_M
+    if norm in ("distance", "dist", "distm", "chainage"):
         return False
     return False
 

@@ -138,8 +138,8 @@ def _is_sensor_out_of_limit(header_name, value, limits_cfg=None):
 
     norm = re.sub(r"[^a-z]", "", str(header_name).lower())
     cfg = limits_cfg or {}
-    cross_val = cfg.get("crosslevel_mm")
-    cross_limit = 200.0 if cross_val is None else float(cross_val)
+    # No crosslevel limit per Indian Railway BG standards
+    # Twist: 1 mm/m for straight track (Indian Railway BG standard)
 
     # 1. Track Gauge: nominal 1676 mm, mode-dependent permissible tolerance
     if norm in ("gauge", "trackgauge", "trackgaugemm", "gaugemm"):
@@ -148,14 +148,14 @@ def _is_sensor_out_of_limit(header_name, value, limits_cfg=None):
             return num < min_abs or num > max_abs
         return num < min_tol or num > max_tol
 
-    # 2. Cross Level: +/- cross_limit mm permissible limit
+    # 2. Cross Level: no permissible limit (Indian Railway BG standard)
     if norm in ("crosslevel", "crosslevelmm", "cross", "crossover", "crosslvl", "absolutetilt"):
-        return abs(num) >= cross_limit
+        return False
 
-    # 3. Twist: twist_limit mm/m permissible limit
+    # 3. Twist: 1 mm/m straight track limit (Indian Railway BG standard)
     if norm in ("twist", "twistmmm", "twistmmperm", "cumulativetilt"):
-        twist_val = cfg.get("twist_mm_per_m", 3.0)
-        twist_limit = 3.0 if twist_val is None else float(twist_val)
+        twist_val = cfg.get("twist_mm_per_m", 1.0)
+        twist_limit = 1.0 if twist_val is None else float(twist_val)
         return abs(num) >= twist_limit
 
     # 4. Distance: negative check

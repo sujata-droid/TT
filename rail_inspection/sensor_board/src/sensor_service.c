@@ -40,7 +40,7 @@
 #define GAUGE_READ_DIV       (ACQUISITION_HZ / GAUGE_READ_HZ)
 #define TWIST_HISTORY_MAX    200
 #define STATUS_CHECK_SECS    5
-#define CL_FILTER_TAPS       8
+#define CL_FILTER_TAPS       10
 /* PCB encoder wiring: P8_15 = gpio1[15] (A), P8_12 = gpio1[12] (B). */
 #define ENCODER_GPIO_CHIP    "/dev/gpiochip1"
 #define ENCODER_GPIO_A_OFFSET 15u
