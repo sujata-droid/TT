@@ -191,6 +191,12 @@ fi
 
 echo "[6/8] Starting Daly BMS battery monitor"
 pkill -f 'tools/daly_bms.py' 2>/dev/null || true
+pkill -f 'tools/display_power_manager.py' 2>/dev/null || true
+# Ensure DPMS and screen blanking are completely disabled on X11 display
+export DISPLAY=:0
+xset -dpms 2>/dev/null || true
+xset s off 2>/dev/null || true
+xset s noblank 2>/dev/null || true
 if [ -f "$ROOT_DIR/tools/daly_bms.py" ]; then
     python3 "$ROOT_DIR/tools/daly_bms.py" --daemon >"$LOG_DIR/daly_bms.log" 2>&1 &
     echo "Daly BMS monitor started in background"
