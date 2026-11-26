@@ -197,32 +197,106 @@ def render_bar(deg: float, max_deg: float = 50.0, width: int = 30) -> str:
     return "[" + "".join(bar) + "]"
 
 
-def live_display_mode(incl: Inclinometer, duration: float = 0.0):
-    """Clean live console display suitable for video recording."""
-    print("\n" + "=" * 70)
-    print("   MURATA SCL3300 INCLINOMETER LIVE MONITOR (VIDEO RECORDING MODE)")
-    print("=" * 70)
-    print(f" Sensor Axis: ACC/ANG_{incl.axis}  |  Range: Mode 1 (+/-90°)  |  Gauge: {GAUGE_MM:.0f} mm")
-    print(" Controls: Tilt board to 5°, 20°, 45° | Press Ctrl+C to stop")
-    print("-" * 70)
-    print(f"{'Elapsed':>8s} | {'Angle (Deg)':>12s} | {'Cross-Level':>13s} | {'Visual Tilt Bar':^32s}")
-    print("-" * 70)
+def read_live_gauge_mm() -> float:
+    """Read live gauge from shared memory (rail_sensor_shm).
+    Falls back to GAUGE_MM constant if sensor_service is not running.
+    struct layout: <IIIIqddddiBBBB
+      index 0=magic, 1=ver, 2=seq, 3=update_count, 4=ts_us,
+      5=cross_level_mm, 6=twist_mm_per_m, 7=chainage_m, 8=gauge_mm, ...
+    """
+    try:
+        SHM_STRUCT = struct.Struct('<IIIIqddddiBBBB')
+        with open('/dev/shm/rail_sensor_shm', 'rb') as f:
+            data = f.read(SHM_STRUCT.size)
+        if len(data) >= SHM_STRUCT.size:
+            unpacked = SHM_STRUCT.unpack_from(data)
+            gauge = unpacked[8]  # gauge_mm field
+            if 1500.0 < gauge < 1800.0:  # sanity range for Indian BG/MG
+                return gauge
+    except Exception:
+        pass
+    return GAUGE_MM  # fallback to constant
+
+
+def _trimmed_mean_and_stdev(samples):
+    """Compute 10-sample trimmed mean (drop min & max) and standard deviation."""
+    vals = sorted(samples)
+    trimmed = vals[1:-1] if len(vals) >= 5 else vals
+    mean_val = sum(trimmed) / len(trimmed)
+    var = sum((x - mean_val) ** 2 for x in trimmed) / len(trimmed)
+    return mean_val, math.sqrt(var)
+
+
+def live_display_mode(incl: Inclinometer, duration: float = 0.0, auto_tare: bool = False):
+    """Clean live console display suitable for video recording.
+    Shows Raw Angle, 10-Sample Trimmed Moving Average Angle, Cross-Level, and StdDev.
+    Cross-Level = live_gauge_mm * sin(avg_angle_rad)
+    """
+    from collections import deque
+
+    if auto_tare:
+        print("\n[TARE] Capturing 20 samples at 0.0° for zero calibration...", end="", flush=True)
+        tare_samples = []
+        for _ in range(20):
+            d = incl.read_angle()
+            if math.isfinite(d):
+                tare_samples.append(d + incl.zero_deg)
+            time.sleep(0.05)
+        if tare_samples:
+            incl.zero_deg = sum(tare_samples) / len(tare_samples)
+            print(f" Done! zero_deg = {incl.zero_deg:+.4f}°")
+        else:
+            print(" Failed (no valid samples)")
+
+    # Read live gauge once at startup (updated each loop iteration)
+    live_gauge = read_live_gauge_mm()
+
+    mode_label = "Mode 4 (+/-10° to +/-30°, High-Res)" if incl.mode == 4 else "Mode 1 (+/-90°)"
+    print("\n" + "=" * 74)
+    print("      MURATA SCL3300 INCLINOMETER LIVE MONITOR (VIDEO RECORDING MODE)")
+    print("=" * 74)
+    print(f" Sensor Axis: ACC/ANG_{incl.axis}  |  {mode_label}  |  Gauge: {live_gauge:.0f} mm")
+    print(" Filter: 10-sample Trimmed Mean (drop min/max, 1.0s @ 10 Hz)")
+    print(" Controls: Tilt board | Press Ctrl+C to stop")
+    print("-" * 74)
+    print(f"{'Elapsed':>8s} | {'Raw Angle':>11s} | {'Avg Angle (1s)':>14s} | {'Cross-Level':>12s} | {'StdDev':>8s}")
+    print("-" * 74)
+
+    # 10 samples @ 10 Hz = 1.0 second moving average window
+    filter_window = deque(maxlen=10)
 
     start = time.monotonic()
     try:
         while True:
             now = time.monotonic()
             elapsed = now - start
-            deg = incl.read_angle()
+            raw_deg = incl.read_angle()
 
-            if math.isfinite(deg):
-                # Cross level mm = Gauge * sin(theta)
-                rad = math.radians(deg)
-                cl_mm = GAUGE_MM * math.sin(rad)
-                bar = render_bar(deg, 50.0, 30)
-                print(f"{elapsed:7.2f}s | {deg:+12.3f}°  | {cl_mm:+9.3f} mm  | {bar}", flush=True)
+            # Refresh live gauge each iteration (tracks gauge sensor updates)
+            live_gauge = read_live_gauge_mm()
+
+            if math.isfinite(raw_deg):
+                # Moving average filtering (10 samples)
+                filter_window.append(raw_deg)
+
+                if len(filter_window) >= 10:
+                    # 10 samples (1.0 second) filled: display trimmed mean, cross level, and stdev
+                    avg_deg, stdev_deg = _trimmed_mean_and_stdev(filter_window)
+                    avg_str = f"{avg_deg:+13.3f}°"
+                    rad = math.radians(avg_deg)
+                    # Cross-Level = live gauge (mm) * sin(avg_angle)
+                    cl_mm = live_gauge * math.sin(rad)
+                    cl_str = f"{cl_mm:+9.3f} mm"
+                    std_str = f"±{stdev_deg:.3f}°"
+                else:
+                    # Initial 0.00s to 0.90s warmup: show '--' until 10 samples collected
+                    avg_str = "       --     "
+                    cl_str = "     --     "
+                    std_str = "   --   "
+
+                print(f"{elapsed:7.2f}s | {raw_deg:+10.3f}° | {avg_str} | {cl_str} | {std_str}", flush=True)
             else:
-                print(f"{elapsed:7.2f}s |    CRC/ERR   |      ERR     | [          |          ]", flush=True)
+                print(f"{elapsed:7.2f}s |   CRC/ERR   |        ERR     |     ERR      |   ERR   ", flush=True)
 
             if duration > 0 and elapsed >= duration:
                 break
@@ -328,6 +402,8 @@ def main():
     parser.add_argument("--live", action="store_true", help="Run live continuous display for video recording")
     parser.add_argument("--test", action="store_true", help="Run guided step-by-step 0°, 5°, 20°, 45° test report")
     parser.add_argument("--axis", default=os.environ.get("RAIL_SCL_AXIS", "X"), choices=["X", "Y", "Z"], help="Sensor tilt axis (default X)")
+    parser.add_argument("--mode", type=int, default=4, choices=[1, 4], help="SCL3300 mode: 4=high-res +/-30° (default), 1=full +/-90°")
+    parser.add_argument("--tare", action="store_true", help="Auto-calibrate 0.0° zero offset at startup")
     parser.add_argument("--duration", type=float, default=0.0, help="Live display duration in seconds (0 = infinite)")
     args = parser.parse_args()
 
@@ -340,11 +416,11 @@ def main():
         svc_was_running = True
 
     try:
-        incl = Inclinometer(mode=1, axis=args.axis)
+        incl = Inclinometer(mode=args.mode, axis=args.axis)
         if args.test:
             step_test_mode(incl)
         else:
-            live_display_mode(incl, duration=args.duration)
+            live_display_mode(incl, duration=args.duration, auto_tare=args.tare)
         incl.close()
     finally:
         if svc_was_running:
