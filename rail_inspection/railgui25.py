@@ -247,7 +247,7 @@ _DEF = {
     "calibration_password": "Patil@123",
     "encoder":   {"scale": _ENCODER_SCALE_MM_PER_COUNT, "factor": 1.123596, "calibrated": True},
     "adc":       {"zero": 2048,  "mpc": 0.0684, "factor": 1.0, "calibrated": False},
-    "incl":      {"offset": 0.0, "factor": 1.0, "calibrated": False},
+    "incl":      {"offset": 7.7428, "factor": 0.9913, "calibrated": True},
     "gnss":      {"ref_ch": 0.0, "calibrated": False},
     "permissible_limits": {
         "track_mode": "straight",

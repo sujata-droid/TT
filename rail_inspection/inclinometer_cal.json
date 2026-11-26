@@ -1,0 +1,14 @@
+{
+  "zero_offset_mm": 7.7428,
+  "scale_factor": 0.9913,
+  "target_ref_mm": 3.5,
+  "calibrated_at": "2026-11-26T12:45:00",
+  "method": "least_squares_linear_fit",
+  "data_points": [
+    {"actual": 1.9, "measured": 9.87},
+    {"actual": 2.2, "measured": 9.76},
+    {"actual": 3.55, "measured": 11.32},
+    {"actual": 3.5, "measured": 11.18},
+    {"actual": 3.2, "measured": 11.06}
+  ]
+}

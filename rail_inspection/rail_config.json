@@ -19,8 +19,8 @@
     "calibrated": false
   },
   "incl": {
-    "offset": 7.66,
-    "factor": 1.036,
+    "offset": 7.7428,
+    "factor": 0.9913,
     "calibrated": true
   },
   "gnss": {
