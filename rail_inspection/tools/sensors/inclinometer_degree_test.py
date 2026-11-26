@@ -240,7 +240,7 @@ def live_display_mode(incl: Inclinometer, duration: float = 0.0, auto_tare: bool
         for _ in range(20):
             d = incl.read_angle()
             if math.isfinite(d):
-                tare_samples.append(d + incl.zero_deg)
+                tare_samples.append((d / incl.scale_factor) + incl.zero_deg)
             time.sleep(0.05)
         if tare_samples:
             incl.zero_deg = sum(tare_samples) / len(tare_samples)
