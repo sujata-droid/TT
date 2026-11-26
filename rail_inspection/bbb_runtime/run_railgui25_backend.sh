@@ -208,4 +208,4 @@ tail -n 20 "$SENSOR_LOG" || true
 echo
 
 echo "[8/8] Launching railgui25 via shared-memory wrapper"
-exec python3 "$ROOT_DIR/bbb_runtime/launch_railgui25_backend.py"
+exec python3 "$ROOT_DIR/bbb_runtime/launch_railgui25_backend.py" > "$LOG_DIR/railgui25.log" 2>&1

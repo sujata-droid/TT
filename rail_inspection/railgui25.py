@@ -255,8 +255,8 @@ _DEF = {
         "gauge_min_mm": 1670.0,
         "gauge_max_mm": 1682.0,
         "gauge_mm": 6.0,
-        "crosslevel_mm": 200.0,
-        "twist_mm_per_m": None,
+        "crosslevel_mm": None,
+        "twist_mm_per_m": 1.0,
         "distance_m": None,
     },
 }
@@ -395,8 +395,9 @@ def exceeds_permissible(field, value, cfg=None):
         return False
     if norm in ("twist", "twistmmm", "twistmmperm", "cumulativetilt"):
         # Indian Railway BG standard: 1 mm/m for straight track
-        twist_limit = active_cfg.get("permissible_limits", {}).get("twist_mm_per_m", 1.0)
-        return abs(num) >= float(twist_limit)
+        twist_val = active_cfg.get("permissible_limits", {}).get("twist_mm_per_m")
+        twist_limit = 1.0 if twist_val is None else float(twist_val)
+        return abs(num) >= twist_limit
     if norm in ("distance", "dist", "distm"):
         return num < 0.0
     return False

@@ -33,8 +33,8 @@
     "gauge_min_mm": 1670.0,
     "gauge_max_mm": 1682.0,
     "gauge_mm": 6.0,
-    "crosslevel_mm": 200.0,
-    "twist_mm_per_m": null,
+    "crosslevel_mm": null,
+    "twist_mm_per_m": 1.0,
     "distance_m": null
   },
   "bms": {
